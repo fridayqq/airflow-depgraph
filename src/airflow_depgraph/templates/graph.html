@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>__TITLE__</title>
+<style>
+:root {
+  --bg: #fcfcfb; --panel: #ffffff; --fg: #0b0b0b; --mut: #52514e; --line: #e5e4e0; --acc: #2a78d6;
+  --c-dag: #2a78d6; --c-asset: #eb6834; --c-trigger: #1baf7a; --c-sensor: #eda100;
+  --critical: #d03b3b; --warning: #fab219; --edge: #b9b7b0; --shadow: rgba(0, 0, 0, .15);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1a1a19; --panel: #22221f; --fg: #f0efec; --mut: #c3c2b7; --line: #3a3935; --acc: #3987e5;
+    --c-dag: #3987e5; --c-asset: #d95926; --c-trigger: #199e70; --c-sensor: #c98500; --edge: #55534d; --shadow: rgba(0, 0, 0, .5);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #1a1a19; --panel: #22221f; --fg: #f0efec; --mut: #c3c2b7; --line: #3a3935; --acc: #3987e5;
+  --c-dag: #3987e5; --c-asset: #d95926; --c-trigger: #199e70; --c-sensor: #c98500; --edge: #55534d; --shadow: rgba(0, 0, 0, .5);
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg); color: var(--fg); display: flex; flex-direction: column;
+  font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+header {
+  display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center;
+  padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+}
+header h1 { font-size: 16px; margin: 0; }
+header .st { color: var(--mut); }
+input[type=search] {
+  font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg); color: var(--fg); flex: 1 1 260px; max-width: 420px; min-width: 0;
+}
+label.t { display: inline-flex; align-items: center; gap: 4px; color: var(--mut); cursor: pointer; }
+main { flex: 1; display: grid; grid-template-columns: 1fr 320px; min-height: 0; }
+svg { width: 100%; height: 100%; display: block; cursor: grab; }
+svg:active { cursor: grabbing; }
+aside {
+  border-left: 1px solid var(--line); background: var(--panel); padding: 12px 14px;
+  overflow: auto; font-size: 12.5px;
+}
+aside h2 { font-size: 14px; margin: 0 0 6px; word-break: break-all; }
+aside h3 { font-size: 12px; color: var(--mut); margin: 12px 0 4px; text-transform: uppercase; letter-spacing: .03em; }
+aside ul { margin: 0; padding-left: 16px; }
+aside li { margin: 2px 0; cursor: pointer; word-break: break-all; }
+aside li:hover { color: var(--acc); }
+aside .hint { color: var(--mut); }
+aside a { color: var(--acc); }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; color: var(--mut); }
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.legend i { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+.legend i.sq { border-radius: 2px; }
+.legend i.dia { border-radius: 2px; transform: rotate(45deg); background: var(--c-sensor); }
+.legend i.tri {
+  width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent;
+  border-bottom: 11px solid var(--c-trigger); border-radius: 0;
+}
+.legend i.ring { background: none; border: 2.5px solid var(--critical); }
+.legend i.ring.warn { border-color: var(--warning); }
+#tip {
+  position: fixed; pointer-events: none; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 9px; font-size: 12px; box-shadow: 0 2px 10px var(--shadow);
+  display: none; max-width: 360px; word-break: break-all; z-index: 9;
+}
+text.lbl {
+  font-size: 10px; fill: var(--fg); pointer-events: none; paint-order: stroke;
+  stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round;
+}
+.badge { display: inline-block; padding: 0 6px; border-radius: 999px; font-size: 11px; background: var(--line); }
+.badge.crit { background: var(--critical); color: #fff; }
+.badge.warn { background: var(--warning); color: #0b0b0b; }
+@media (max-width: 720px) {
+  html, body { height: auto; min-height: 100%; }
+  main { display: block; }
+  svg { height: 60vh; }
+  aside { border-left: 0; border-top: 1px solid var(--line); }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>__TITLE__</h1>
+  <span class="st">__STATS__</span>
+  <span class="st" id="ver" hidden></span>
+  <input id="q" type="search" placeholder="find a DAG or asset… (+dag, dag+, 2+dag+3)" autocomplete="off" aria-label="Search">
+  <label class="t"><input type="checkbox" id="hideAssets"> DAG→DAG (hide assets)</label>
+  <label class="t"><input type="checkbox" id="onlyFail"> only failing + their chain</label>
+  <label class="t" id="hlWrap"><input type="checkbox" id="hl"> __HL_LABEL__</label>
+  <span class="legend">
+    <span><i style="background:var(--c-dag)"></i>DAG</span>
+    <span><i class="sq" style="background:var(--c-asset)"></i>asset</span>
+    <span><i class="tri"></i>trigger</span>
+    <span><i class="dia"></i>sensor</span>
+    <span><i class="ring"></i>failed (pipeline)</span>
+    <span><i class="ring warn"></i>failed (tests only)</span>
+  </span>
+</header>
+<main>
+  <svg id="g" role="img" aria-label="Dependency graph"></svg>
+  <aside id="side"></aside>
+</main>
+<div id="tip"></div>
+<!-- d3 v7.9.0, https://d3js.org, Copyright 2010-2023 Mike Bostock, ISC License (see vendor/D3-LICENSE in the package) -->
+<script>__D3__</script>
+<script>
+const DATA = __DATA__;
+const META = DATA.meta || {};
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+const css = k => getComputedStyle(document.documentElement).getPropertyValue(k).trim();
+const COLOR = type => css({dag: '--c-dag', asset: '--c-asset', trigger: '--c-trigger', sensor: '--c-sensor'}[type] || '--c-dag');
+
+const byId = new Map(DATA.nodes.map(n => [n.id, n]));
+const outM = new Map(), inM = new Map();
+DATA.edges.forEach(e => {
+  if (!outM.has(e.s)) outM.set(e.s, []);
+  if (!inM.has(e.t)) inM.set(e.t, []);
+  outM.get(e.s).push(e.t);
+  inM.get(e.t).push(e.s);
+});
+
+// Nodes reachable from startIds along adj. Depth counts DAG hops; assets, triggers and sensors in between are free.
+function reach(startIds, adj, depth) {
+  const keep = new Set(startIds);
+  let frontier = [...startIds];
+  for (let hop = 0; frontier.length && hop < depth; hop++) {
+    const next = [], seenLinks = new Set(), stack = [...frontier];
+    while (stack.length) {
+      const x = stack.pop();
+      for (const y of adj.get(x) || []) {
+        if (byId.get(y).type === 'dag') {
+          if (!keep.has(y)) { keep.add(y); next.push(y); }
+        } else if (!seenLinks.has(y)) { seenLinks.add(y); keep.add(y); stack.push(y); }
+      }
+    }
+    frontier = next;
+  }
+  return keep;
+}
+const chain = id => new Set([...reach([id], outM, Infinity), ...reach([id], inM, Infinity)]);
+
+const svg = d3.select('#g'), W = () => svg.node().clientWidth, H = () => svg.node().clientHeight;
+const root = svg.append('g');
+const zoom = d3.zoom().scaleExtent([0.15, 6]).on('zoom', ev => root.attr('transform', ev.transform));
+svg.call(zoom);
+const tip = document.getElementById('tip'), side = document.getElementById('side'), qEl = document.getElementById('q');
+const box = id => document.getElementById(id);
+let nodes = [], links = [], nodeMap = new Map(), sim = null;
+let selectedId = null, searchKeep = null, lastTargets = [];
+
+function r(n) { return n.type === 'dag' ? 4 + Math.sqrt(n.down) * 2.2 : 3.5; }
+const failing = n => n.fail && !n.fail.paused;
+
+function buildView() {
+  const hideAssets = box('hideAssets').checked, onlyFail = box('onlyFail').checked;
+  let keep = new Set(DATA.nodes.map(n => n.id));
+  if (onlyFail) {
+    keep = new Set();
+    DATA.nodes.filter(failing).forEach(n => chain(n.id).forEach(x => keep.add(x)));
+  }
+  let es = DATA.edges.filter(e => keep.has(e.s) && keep.has(e.t));
+  if (hideAssets) {  // collapse dag -> link -> dag into dag -> dag
+    const coll = new Map();
+    es.forEach(e => {
+      if (byId.get(e.s).type === 'dag' && byId.get(e.t).type !== 'dag') {
+        (outM.get(e.t) || []).forEach(t => {
+          if (t !== e.s && byId.get(t).type === 'dag' && keep.has(t)) coll.set(e.s + '|' + t, {s: e.s, t});
+        });
+      }
+    });
+    es = [...coll.values()];
+    keep = new Set([...keep].filter(id => byId.get(id).type === 'dag'));
+  }
+  const prev = nodeMap;
+  nodes = [...keep].map(id => Object.assign({}, byId.get(id), prev.has(id) ? {x: prev.get(id).x, y: prev.get(id).y} : {}));
+  nodeMap = new Map(nodes.map(n => [n.id, n]));
+  links = es.map(e => ({source: e.s, target: e.t}));
+  draw();
+}
+
+function draw() {
+  if (sim) sim.stop();
+  root.selectAll('*').remove();
+  svg.select('defs').remove();
+  const edgeCol = css('--edge');
+  svg.append('defs').append('marker').attr('id', 'arrow').attr('viewBox', '0 -4 8 8').attr('refX', 7).attr('refY', 0)
+    .attr('markerWidth', 6).attr('markerHeight', 6).attr('orient', 'auto')
+    .append('path').attr('d', 'M0,-3L7,0L0,3').attr('fill', edgeCol);
+  const link = root.append('g').attr('stroke-opacity', .6).selectAll('line').data(links).join('line')
+    .attr('stroke-width', 1.2).attr('marker-end', 'url(#arrow)');
+  const node = root.append('g').selectAll('g').data(nodes, d => d.id).join('g').attr('class', 'n').style('cursor', 'pointer')
+    .call(d3.drag()
+      .on('start', (ev, d) => { if (!ev.active) sim.alphaTarget(.3).restart(); d.fx = d.x; d.fy = d.y; })
+      .on('drag', (ev, d) => { d.fx = ev.x; d.fy = ev.y; })
+      .on('end', (ev, d) => { if (!ev.active) sim.alphaTarget(0); if (!d.pinned) { d.fx = null; d.fy = null; } }));
+  node.each(function (d) {
+    const g = d3.select(this), c = COLOR(d.type), R = r(d);
+    if (d.type === 'dag') g.append('circle').attr('r', R).attr('fill', c);
+    else if (d.type === 'asset') g.append('rect').attr('x', -R).attr('y', -R).attr('width', 2 * R).attr('height', 2 * R).attr('rx', 1.5).attr('fill', c);
+    else if (d.type === 'trigger') g.append('path').attr('d', `M0,${-R - 1}L${R + 1},${R}L${-R - 1},${R}Z`).attr('fill', c);
+    else g.append('rect').attr('x', -R).attr('y', -R).attr('width', 2 * R).attr('height', 2 * R).attr('transform', 'rotate(45)').attr('fill', c);
+    if (d.paused) g.select('circle,rect,path').attr('fill-opacity', .5);
+    if (failing(d)) g.append('circle').attr('r', R + 3).attr('fill', 'none')
+      .attr('stroke', d.fail.kind === 'tests' ? css('--warning') : css('--critical')).attr('stroke-width', 2.5);
+    if (d.type === 'dag' && (d.down >= 5 || failing(d))) g.append('text').attr('class', 'lbl').attr('dy', R + 10).attr('text-anchor', 'middle').text(d.label);
+  });
+  node.on('mouseenter', (ev, d) => { tip.style.display = 'block'; tip.innerHTML = `<b>${esc(d.label)}</b> ` + facts(d); })
+    .on('mousemove', ev => { tip.style.left = (ev.clientX + 14) + 'px'; tip.style.top = (ev.clientY + 14) + 'px'; })
+    .on('mouseleave', () => { tip.style.display = 'none'; })
+    .on('click', (ev, d) => select(d.id))
+    .on('dblclick', (ev, d) => { d.pinned = !d.pinned; if (!d.pinned) { d.fx = null; d.fy = null; } ev.stopPropagation(); });
+  sim = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(links).id(d => d.id).distance(40).strength(.6))
+    .force('charge', d3.forceManyBody().strength(-120))
+    .force('center', d3.forceCenter(W() / 2, H() / 2))
+    .force('collide', d3.forceCollide(d => r(d) + 4))
+    .on('tick', () => {
+      link.each(function (l) {  // stop the line at the target's rim so the arrowhead stays visible
+        const dx = l.target.x - l.source.x, dy = l.target.y - l.source.y, len = Math.hypot(dx, dy) || 1, k = (r(l.target) + (failing(l.target) ? 6 : 2)) / len;
+        d3.select(this).attr('x1', l.source.x).attr('y1', l.source.y).attr('x2', l.target.x - dx * k).attr('y2', l.target.y - dy * k);
+      });
+      node.attr('transform', d => `translate(${d.x},${d.y})`);
+    });
+  applyHighlight();
+}
+
+function facts(d) {
+  let f = '<span class="badge">' + esc(d.type) + '</span>';
+  if (d.paused) f += ' <span class="badge">paused</span>';
+  if (d.fail) f += ` <span class="badge ${d.fail.kind === 'tests' ? 'warn' : 'crit'}">${d.fail.kind === 'tests' ? 'tests failed' : 'pipeline failed'}${d.fail.paused ? ' · paused' : ''}</span> ${esc(d.fail.date || '')}`;
+  return f + `<br>↓ ${d.down} DAGs depend on it · ↑ waits for ${d.up} DAGs · edges: ${d.indeg} in / ${d.outdeg} out`;
+}
+
+function dagList(startId, adj) {
+  return [...reach([startId], adj, Infinity)].filter(x => x !== startId).map(x => byId.get(x)).filter(n => n.type === 'dag')
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function renderSide(d, msg) {
+  if (!d) {
+    side.innerHTML = `<h2>${esc(msg || 'Click a node')}</h2><p class="hint">Node size shows how many DAGs depend on it, transitively. Click to highlight everything upstream and downstream. Double-click pins or releases a node. Scroll to zoom, drag to pan.<br><br>Search: <code>dag</code> focuses the first match, <code>+dag</code> adds its upstream, <code>dag+</code> its downstream, <code>2+dag+3</code> limits the depth.</p>`;
+    return;
+  }
+  const down = dagList(d.id, outM), up = dagList(d.id, inM);
+  const li = n => `<li data-id="${esc(n.id)}">${failing(n) ? '⚠ ' : ''}${esc(n.label)}${n.hl ? ' ★' : ''}</li>`;
+  const base = META.source ? String(META.source).replace(/\/+$/, '') : '';
+  side.innerHTML = `<h2>${esc(d.label)}</h2><div>${facts(d)}</div>` +
+    `<h3>↓ Downstream (${down.length})</h3><ul>${down.map(li).join('') || '<li class="hint">none</li>'}</ul>` +
+    `<h3>↑ Upstream (${up.length})</h3><ul>${up.map(li).join('') || '<li class="hint">none</li>'}</ul>` +
+    (d.type === 'dag' && base ? `<p><a href="${esc(base + '/dags/' + encodeURIComponent(d.label))}" target="_blank" rel="noopener">Open in Airflow ↗</a></p>` : '');
+  side.querySelectorAll('li[data-id]').forEach(el => el.onclick = () => { select(el.dataset.id); fitTo([el.dataset.id]); });
+}
+
+function select(id) {
+  selectedId = id; searchKeep = null;
+  renderSide(byId.get(id));
+  applyHighlight();
+}
+
+function applyHighlight() {
+  const hl = box('hl').checked;
+  const keep = searchKeep || (selectedId ? chain(selectedId) : null);
+  const lit = d => hl && d.hl;
+  root.selectAll('g.n').style('opacity', d => (keep && !keep.has(d.id)) ? .12 : 1)
+    .each(function (d) { d3.select(this).select('circle,rect,path').attr('stroke', lit(d) ? css('--fg') : null).attr('stroke-width', lit(d) ? 2 : null); });
+  root.selectAll('line').style('opacity', l => keep ? ((keep.has(l.source.id) && keep.has(l.target.id)) ? .9 : .05) : .6)
+    .attr('stroke', l => keep && keep.has(l.source.id) && keep.has(l.target.id) ? css('--acc') : css('--edge'));
+}
+
+function fitTo(ids) {
+  const ns = ids.map(i => nodeMap.get(i)).filter(n => n && n.x != null);
+  if (!ns.length) return;
+  const x0 = d3.min(ns, n => n.x), x1 = d3.max(ns, n => n.x), y0 = d3.min(ns, n => n.y), y1 = d3.max(ns, n => n.y), pad = 60;
+  const k = Math.max(0.15, Math.min(ns.length === 1 ? 1.6 : 2, (W() - 2 * pad) / Math.max(x1 - x0, 1), (H() - 2 * pad) / Math.max(y1 - y0, 1)));
+  svg.transition().duration(400).call(zoom.transform, d3.zoomIdentity.translate(W() / 2 - k * (x0 + x1) / 2, H() / 2 - k * (y0 + y1) / 2).scale(k));
+}
+
+// "2+dag+3": leading +/digits = upstream (depth), trailing +/digits = downstream. No "+" at all = plain substring.
+function parseQuery(raw) {
+  const t = raw.trim();
+  if (!t) return null;
+  const m = /^(\d*)(\+?)(.+?)(\+?)(\d*)$/.exec(t);
+  if (!m || (!m[2] && !m[4])) return {text: t.toLowerCase(), plus: false};
+  const depth = s => s ? parseInt(s, 10) : Infinity;
+  return {text: m[3].toLowerCase(), plus: true, up: !!m[2], upDepth: depth(m[1]), down: !!m[4], downDepth: depth(m[5])};
+}
+
+function runSearch(fit) {
+  const p = parseQuery(qEl.value);
+  selectedId = null; searchKeep = null; lastTargets = [];
+  if (!p) { renderSide(null); applyHighlight(); return; }
+  if (!p.plus) {
+    const n = nodes.find(x => x.label.toLowerCase().includes(p.text));
+    if (!n) { renderSide(null, 'No match'); applyHighlight(); return; }
+    select(n.id);
+    lastTargets = [n.id];
+    if (fit) fitTo(lastTargets);
+    return;
+  }
+  const dags = DATA.nodes.filter(n => n.type === 'dag' && n.label.toLowerCase().includes(p.text));
+  const exact = dags.filter(n => n.label.toLowerCase() === p.text);
+  const hits = (exact.length ? exact : dags).map(n => n.id);
+  if (!hits.length) { renderSide(null, 'No match'); applyHighlight(); return; }
+  const keep = new Set(hits);
+  if (p.up) reach(hits, inM, p.upDepth).forEach(x => keep.add(x));
+  if (p.down) reach(hits, outM, p.downDepth).forEach(x => keep.add(x));
+  renderSide(byId.get(hits[0]));
+  selectedId = hits[0]; searchKeep = keep;
+  applyHighlight();
+  lastTargets = [...keep].filter(id => nodeMap.has(id));
+  if (fit) fitTo(lastTargets);
+}
+
+qEl.addEventListener('input', () => runSearch(true));
+['hideAssets', 'onlyFail'].forEach(id => box(id).addEventListener('change', buildView));
+box('hl').addEventListener('change', applyHighlight);
+svg.on('click', ev => { if (ev.target === svg.node()) { selectedId = null; searchKeep = null; renderSide(null); applyHighlight(); } });
+if (window.matchMedia) {
+  const mq = matchMedia('(prefers-color-scheme: dark)');
+  (mq.addEventListener ? mq.addEventListener.bind(mq, 'change') : mq.addListener.bind(mq))(() => { if (sim) draw(); });
+}
+
+if (!DATA.nodes.some(n => n.hl)) box('hlWrap').hidden = true;
+if (META.airflow_version) { box('ver').textContent = 'Airflow ' + META.airflow_version; box('ver').hidden = false; }
+
+// Hash flags: #q=<text>,onlyFail,hideAssets,hl (any subset)
+const flags = location.hash.replace(/^#/, '').split(',').filter(Boolean);
+['hideAssets', 'onlyFail', 'hl'].forEach(id => { if (flags.includes(id)) box(id).checked = true; });
+renderSide(null);
+buildView();
+const qf = flags.find(f => f.startsWith('q='));
+if (qf) {
+  let text = qf.slice(2);
+  try { text = decodeURIComponent(text); } catch (e) { /* keep raw */ }
+  qEl.value = text;
+  runSearch(false);
+  setTimeout(() => fitTo(lastTargets), 1200);
+}
+</script>
+</body>
+</html>
