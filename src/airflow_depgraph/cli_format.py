@@ -14,8 +14,6 @@ TITLES = {
 ARROWS = {"downstream": "→", "upstream": "←"}
 
 
-
-
 def format_hits(hits: list[Hit], info: dict[str, dict], url: str | None,
                 direction: str, header: str) -> str:
     lines = [header]
@@ -32,8 +30,10 @@ def format_hits(hits: list[Hit], info: dict[str, dict], url: str | None,
 
 
 def stamp(snap: Snapshot | None) -> str:
-    if snap is None or not snap.fetched_at:
+    if snap is None:
         return "live"
+    if not snap.fetched_at:
+        return "snapshot (time unknown)"
     return "snapshot " + snap.fetched_at.replace("T", " ")[:16] + " UTC"
 
 

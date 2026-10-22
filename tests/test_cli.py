@@ -181,3 +181,34 @@ def test_graph_writes_both_files(tmp_path, live):
 def test_missing_url_live_exit_1(capsys):
     assert cli.main(["fetch", "-o", "x.json"]) == 1
     assert "error: " in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("cmd", ["graph", "render"])
+def test_json_output_rejected(tmp_path, live, capsys, cmd):
+    out = tmp_path / "x.json"
+    argv = [cmd, FIX, "-o", str(out)] if cmd == "render" else [cmd, "--url", URL, "-o", str(out)]
+    assert cli.main(argv) == 1
+    assert "output must be an .html file" in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_preset_bool_survives_absent_flag(tmp_path, live):
+    preset = tmp_path / "p.toml"
+    preset.write_text(f'url = "{URL}"\nwith_status = true\n')
+    out = tmp_path / "s.json"
+    assert cli.main(["fetch", "--preset", str(preset), "-o", str(out)]) == 0
+    assert set(json.loads(out.read_text())["dags"]) == {"x", "y"}
+
+
+def test_tasks_matching_empty_string_errors(capsys):
+    assert cli.main(["downstream", "dag_e", FIX, "--tasks-matching", ""]) == 1
+    assert "non-empty" in capsys.readouterr().err
+
+
+def test_offline_snapshot_without_fetched_at_not_live(tmp_path, capsys):
+    data = json.loads(Path(FIX).read_text())
+    del data["fetched_at"]
+    f = tmp_path / "s.json"
+    f.write_text(json.dumps(data))
+    assert cli.main(["downstream", "dag_a", str(f)]) == 0
+    assert "live" not in capsys.readouterr().out.splitlines()[0]

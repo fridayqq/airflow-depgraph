@@ -24,6 +24,8 @@ from airflow_depgraph.status import fetch_status
 
 DEFAULT_SNAPSHOT = "airflow-depgraph.snapshot.json"
 DEFAULT_HTML = "airflow-depgraph.html"
+
+
 class CliError(Exception):
     pass
 
@@ -104,6 +106,11 @@ def _load_override(path: str | None) -> dict | None:
     return data
 
 
+def _check_html_output(output: str) -> None:
+    if Path(output).suffix.lower() == ".json":
+        raise CliError(f"output must be an .html file (got {output})")
+
+
 def _write_html(snap: Snapshot, s: Settings, args: argparse.Namespace) -> None:
     try:
         page = render(snap, s, _load_override(args.status))
@@ -116,11 +123,13 @@ def _write_html(snap: Snapshot, s: Settings, args: argparse.Namespace) -> None:
 
 
 def cmd_render(args: argparse.Namespace) -> int:
+    _check_html_output(args.output)
     _write_html(snapmod.load(Path(args.snapshot)), _settings(args), args)
     return 0
 
 
 def cmd_graph(args: argparse.Namespace) -> int:
+    _check_html_output(args.output)
     s = _settings(args)
     snap = _fetch_snapshot(args, s)
     _write_html(snap, s, args)
@@ -170,6 +179,8 @@ def _match_tasks(client, snap, hits, regex, info) -> list[Hit]:
 def _query(args: argparse.Namespace, direction: str) -> int:
     s = _settings(args)
     pattern = args.tasks_matching
+    if pattern == "":
+        raise CliError("--tasks-matching needs a non-empty REGEX")
     if pattern is True:
         pattern = s.task_query_regex
         if not pattern:
@@ -188,7 +199,7 @@ def _query(args: argparse.Namespace, direction: str) -> int:
     if args.json:
         print(hits_json(args.dag, direction, args.depth, hits, info, regex is not None))
     else:
-        header = f"{TITLES[direction]} of {args.dag} — {len(hits)} (depth ≤ {args.depth}, {stamp(args.snapshot and snap)})"
+        header = f"{TITLES[direction]} of {args.dag} — {len(hits)} (depth ≤ {args.depth}, {stamp(snap if args.snapshot else None)})"
         print(format_hits(hits, info, snap.source or s.url, direction, header))
     return 0
 
@@ -219,8 +230,9 @@ def cmd_presets(args: argparse.Namespace) -> int:
         print(f"{name}  {path}")
     if args.preset:
         print()
+        s = _settings(args)
         for f in dataclasses.fields(Settings):
-            value = getattr(_settings(args), f.name)
+            value = getattr(s, f.name)
             if f.name == "token" or (f.name == "user" and not value):
                 continue
             print(f"{f.name} = {'(unset)' if value is None else value}")
