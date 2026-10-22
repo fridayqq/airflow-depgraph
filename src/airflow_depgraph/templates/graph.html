@@ -164,13 +164,20 @@ function buildView() {
     DATA.nodes.filter(failing).forEach(n => chain(n.id).forEach(x => keep.add(x)));
   }
   let es = DATA.edges.filter(e => keep.has(e.s) && keep.has(e.t));
-  if (hideAssets) {  // collapse dag -> link -> dag into dag -> dag
-    const coll = new Map();
+  if (hideAssets) {  // collapse dag -> link(s) -> dag into dag -> dag; via = the last link on the way
+    const adj = new Map(), coll = new Map();
+    es.forEach(e => { if (!adj.has(e.s)) adj.set(e.s, []); adj.get(e.s).push(e.t); });
+    const add = (s, t, via) => { if (s !== t && !coll.has(s + '|' + t)) coll.set(s + '|' + t, {s, t, via}); };
     es.forEach(e => {
-      if (byId.get(e.s).type === 'dag' && byId.get(e.t).type !== 'dag') {
-        (outM.get(e.t) || []).forEach(t => {
-          if (t !== e.s && byId.get(t).type === 'dag' && keep.has(t)) coll.set(e.s + '|' + t, {s: e.s, t});
-        });
+      if (byId.get(e.s).type !== 'dag') return;
+      if (byId.get(e.t).type === 'dag') { add(e.s, e.t, null); return; }
+      const seen = new Set([e.t]), stack = [e.t];
+      while (stack.length) {
+        const x = stack.pop();
+        for (const y of adj.get(x) || []) {
+          if (byId.get(y).type === 'dag') add(e.s, y, byId.get(x).label);
+          else if (!seen.has(y)) { seen.add(y); stack.push(y); }
+        }
       }
     });
     es = [...coll.values()];
@@ -179,7 +186,7 @@ function buildView() {
   const prev = nodeMap;
   nodes = [...keep].map(id => Object.assign({}, byId.get(id), prev.has(id) ? {x: prev.get(id).x, y: prev.get(id).y} : {}));
   nodeMap = new Map(nodes.map(n => [n.id, n]));
-  links = es.map(e => ({source: e.s, target: e.t}));
+  links = es.map(e => ({source: e.s, target: e.t, via: e.via}));
   draw();
 }
 
@@ -248,11 +255,11 @@ function renderSide(d, msg) {
   }
   const down = dagList(d.id, outM), up = dagList(d.id, inM);
   const li = n => `<li data-id="${esc(n.id)}">${failing(n) ? '⚠ ' : ''}${esc(n.label)}${n.hl ? ' ★' : ''}</li>`;
-  const base = META.source ? String(META.source).replace(/\/+$/, '') : '';
+  const base = /^https?:\/\//.test(META.source || '') ? String(META.source).replace(/\/+$/, '') : '';
   side.innerHTML = `<h2>${esc(d.label)}</h2><div>${facts(d)}</div>` +
     `<h3>↓ Downstream (${down.length})</h3><ul>${down.map(li).join('') || '<li class="hint">none</li>'}</ul>` +
     `<h3>↑ Upstream (${up.length})</h3><ul>${up.map(li).join('') || '<li class="hint">none</li>'}</ul>` +
-    (d.type === 'dag' && base ? `<p><a href="${esc(base + '/dags/' + encodeURIComponent(d.label))}" target="_blank" rel="noopener">Open in Airflow ↗</a></p>` : '');
+    (d.type === 'dag' && base ? `<p><a href="${esc(base + '/dags/' + encodeURIComponent(d.id.slice(4)))}" target="_blank" rel="noopener">Open in Airflow ↗</a></p>` : '');
   side.querySelectorAll('li[data-id]').forEach(el => el.onclick = () => { select(el.dataset.id); fitTo([el.dataset.id]); });
 }
 
@@ -280,14 +287,15 @@ function fitTo(ids) {
   svg.transition().duration(400).call(zoom.transform, d3.zoomIdentity.translate(W() / 2 - k * (x0 + x1) / 2, H() / 2 - k * (y0 + y1) / 2).scale(k));
 }
 
+const SEARCH_RE = /__SEARCH_RE__/;
 // "2+dag+3": leading +/digits = upstream (depth), trailing +/digits = downstream. No "+" at all = plain substring.
 function parseQuery(raw) {
   const t = raw.trim();
   if (!t) return null;
-  const m = /^(\d*)(\+?)(.+?)(\+?)(\d*)$/.exec(t);
-  if (!m || (!m[2] && !m[4])) return {text: t.toLowerCase(), plus: false};
+  const m = SEARCH_RE.exec(t);
+  if (!m || (m[1] === undefined && m[3] === undefined)) return {text: t.toLowerCase(), plus: false};
   const depth = s => s ? parseInt(s, 10) : Infinity;
-  return {text: m[3].toLowerCase(), plus: true, up: !!m[2], upDepth: depth(m[1]), down: !!m[4], downDepth: depth(m[5])};
+  return {text: m[2].toLowerCase(), plus: true, up: m[1] !== undefined, upDepth: depth(m[1]), down: m[3] !== undefined, downDepth: depth(m[3])};
 }
 
 function runSearch(fit) {
@@ -316,9 +324,15 @@ function runSearch(fit) {
   if (fit) fitTo(lastTargets);
 }
 
-qEl.addEventListener('input', () => runSearch(true));
-['hideAssets', 'onlyFail'].forEach(id => box(id).addEventListener('change', buildView));
-box('hl').addEventListener('change', applyHighlight);
+function syncHash() {  // keep the URL fragment in step with the toggles and the search text
+  const parts = [];
+  if (qEl.value.trim()) parts.push('q=' + encodeURIComponent(qEl.value.trim()));
+  ['onlyFail', 'hideAssets', 'hl'].forEach(id => { if (box(id).checked) parts.push(id); });
+  try { history.replaceState(null, '', parts.length ? '#' + parts.join(',') : location.pathname + location.search); } catch (e) { /* file:// or sandboxed */ }
+}
+qEl.addEventListener('input', () => { runSearch(true); syncHash(); });
+['hideAssets', 'onlyFail'].forEach(id => box(id).addEventListener('change', () => { buildView(); syncHash(); }));
+box('hl').addEventListener('change', () => { applyHighlight(); syncHash(); });
 svg.on('click', ev => { if (ev.target === svg.node()) { selectedId = null; searchKeep = null; renderSide(null); applyHighlight(); } });
 if (window.matchMedia) {
   const mq = matchMedia('(prefers-color-scheme: dark)');

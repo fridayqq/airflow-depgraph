@@ -2,7 +2,7 @@ import dataclasses
 import re
 
 from airflow_depgraph.presets import Settings
-from airflow_depgraph.render import VENDOR_D3, build_view, render
+from airflow_depgraph.render import SEARCH_PATTERN, VENDOR_D3, build_view, render
 from airflow_depgraph.snapshot import Snapshot
 
 
@@ -52,9 +52,9 @@ def test_view_down_counts(small_snapshot):
 
 def test_view_stats(small_snapshot):
     stats = build_view(small_snapshot, Settings())["stats"]
-    assert stats["dags"] == 12 and stats["assets"] == 5
-    assert stats["triggers"] == 1 and stats["sensors"] == 1
-    assert stats["edges"] == 19
+    assert stats["dags"] == 12 and stats["assets"] == 6
+    assert stats["triggers"] == 1 and stats["sensors"] == 2
+    assert stats["edges"] == 22
     assert stats["failing"] == 2
     assert stats["snapshot"] == "2026-10-22T06:00:00Z"
     assert stats["source"] == "https://airflow.example.com"
@@ -80,7 +80,7 @@ def test_render_has_no_placeholders_and_inlines_d3(small_snapshot):
     assert "https://d3js.org v7.9.0" in html
     assert "<script src=" not in html and "<link" not in html
     assert "Reports" in html
-    assert "12 DAGs · 5 assets · 1 trigger · 1 sensor · 19 edges · failing now: 2 · snapshot 2026-10-22T06:00:00Z" in html
+    assert "12 DAGs · 6 assets · 1 trigger · 2 sensors · 22 edges · failing now: 2 · snapshot 2026-10-22T06:00:00Z" in html
 
 
 def test_render_embeds_meta(small_snapshot):
@@ -108,3 +108,28 @@ def test_render_title_escaped(small_snapshot):
 def test_render_no_network_references(small_snapshot):
     head = render(small_snapshot, Settings()).replace(VENDOR_D3.read_text(encoding="utf-8"), "")
     assert "googleapis" not in head and "cdnjs" not in head
+
+
+def test_search_pattern_is_embedded_verbatim(small_snapshot):
+    html = render(small_snapshot, Settings())
+    assert "const SEARCH_RE = /" + SEARCH_PATTERN + "/;" in html
+
+
+def _parse(text):
+    m = re.match(SEARCH_PATTERN, text)
+    if m.group(1) is None and m.group(3) is None:
+        return ("plain", text)
+    return (m.group(1), m.group(2), m.group(3))
+
+
+def test_search_pattern_keeps_digits_that_belong_to_the_name():
+    assert _parse("+dag_2") == ("", "dag_2", None)
+    assert _parse("12_hourly+") == (None, "12_hourly", "")
+    assert _parse("2+dag+3") == ("2", "dag", "3")
+    assert _parse("dag") == ("plain", "dag")
+
+
+def test_fixture_has_two_link_chain(small_snapshot):
+    g = small_snapshot.graph
+    assert g.out["dag:dag_j"] == ["asset:2", "asset:6"]
+    assert g.out["asset:6"] == ["sensor:2"] and g.out["sensor:2"] == ["dag:dag_k_report"]

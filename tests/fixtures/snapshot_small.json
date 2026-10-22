@@ -21,8 +21,10 @@
     {"id": "asset:3", "label": "team-customers", "type": "asset"},
     {"id": "asset:4", "label": "team-billing", "type": "asset"},
     {"id": "asset:5", "label": "daily_summary", "type": "asset"},
+    {"id": "asset:6", "label": "extract_done", "type": "asset"},
     {"id": "trigger:1", "label": "orders_ready", "type": "trigger"},
-    {"id": "sensor:1", "label": "customers_file", "type": "sensor"}
+    {"id": "sensor:1", "label": "customers_file", "type": "sensor"},
+    {"id": "sensor:2", "label": "extract_wait", "type": "sensor"}
   ],
   "edges": [
     {"source_id": "dag:dag_a", "target_id": "asset:1"},
@@ -43,7 +45,10 @@
     {"source_id": "dag:dag_e", "target_id": "asset:5"},
     {"source_id": "asset:5", "target_id": "dag:dag_l_report"},
     {"source_id": "dag:dag_h", "target_id": "asset:3"},
-    {"source_id": "dag:dag_j", "target_id": "asset:2"}
+    {"source_id": "dag:dag_j", "target_id": "asset:2"},
+    {"source_id": "dag:dag_j", "target_id": "asset:6"},
+    {"source_id": "asset:6", "target_id": "sensor:2"},
+    {"source_id": "sensor:2", "target_id": "dag:dag_k_report"}
   ],
   "dags": {
     "dag_a": {
