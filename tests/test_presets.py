@@ -18,6 +18,8 @@ def _clean_env(monkeypatch, tmp_path):
     for var in ("AIRFLOW_DEPGRAPH_PRESETS", "AIRFLOW_DEPGRAPH_PRESET"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-empty"))
+    # Callers passing a bare {} env fall back to Path.home(); keep that off the real home.
+    monkeypatch.setenv("HOME", str(tmp_path / "home-empty"))
 
 
 def write(path: Path, text: str) -> Path:
@@ -120,3 +122,25 @@ def test_list_presets_dedup_first_wins(tmp_path, monkeypatch):
     got = list_presets(dict(os.environ))
     assert [n for n, _ in got] == ["b", "example"]
     assert dict(got)["example"] == a
+
+
+def test_bare_env_never_reads_real_home():
+    assert "home-empty" in str(Path.home())
+
+
+def test_load_invalid_toml(tmp_path):
+    f = write(tmp_path / "broken.toml", "url = \n")
+    with pytest.raises(PresetError, match=r"invalid TOML in .*broken\.toml"):
+        load_preset(f)
+
+
+def test_resolve_bad_int_in_preset_file(tmp_path):
+    f = write(tmp_path / "p.toml", 'status_runs_lookback = "five"\n')
+    with pytest.raises(PresetError, match="status_runs_lookback"):
+        resolve({}, {}, str(f))
+
+
+def test_example_mentions_every_key():
+    text = find_preset("example", {}).read_text()
+    missing = [k for k in sorted(PRESET_KEYS | {"name"}) if k not in text]
+    assert not missing
