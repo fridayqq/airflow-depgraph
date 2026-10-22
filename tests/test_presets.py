@@ -100,6 +100,12 @@ def test_resolve_bool_env():
     assert resolve({}, {"AIRFLOW_DEPGRAPH_WITH_STATUS": "No"}, None).with_status is False
 
 
+def test_resolve_empty_env_does_not_override_preset(tmp_path):
+    f = tmp_path / "p.toml"
+    f.write_text('url = "A"\n')
+    assert resolve({}, {"AIRFLOW_DEPGRAPH_URL": ""}, str(f)).url == "A"
+
+
 def test_resolve_int_and_bad_int():
     assert resolve({}, {"AIRFLOW_DEPGRAPH_STATUS_RUNS_LOOKBACK": "7"}, None).status_runs_lookback == 7
     with pytest.raises(PresetError):

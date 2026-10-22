@@ -122,7 +122,7 @@ def resolve(cli: Mapping[str, object], env: Mapping[str, str], preset: str | Non
         env_key = ENV_PREFIX + field.upper()
         if cli.get(field) is not None:
             values[field] = _coerce(field, cli[field])
-        elif env_key in env:
+        elif env.get(env_key):
             values[field] = _coerce(field, env[env_key])
         elif field in from_file:
             values[field] = _coerce(field, from_file[field])

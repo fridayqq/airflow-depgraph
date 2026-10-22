@@ -63,6 +63,16 @@ class AirflowClient:
             raise ApiError(
                 f"no response from {self.url} ({e.reason}) — VPN/DNS?", None, path
             ) from None
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            raise ApiError(
+                f"non-JSON response from {path} — wrong URL or a login/proxy page?", None, path
+            ) from None
+        except TimeoutError:
+            raise ApiError(
+                f"timed out after {self.timeout:g}s waiting for {self.url}{path}", None, path
+            ) from None
+        except OSError as e:
+            raise ApiError(f"network error on {path}: {e}", None, path) from None
 
     def get(self, path: str, **query) -> dict:
         full = self.url + path

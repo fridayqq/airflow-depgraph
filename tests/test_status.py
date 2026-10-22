@@ -111,9 +111,9 @@ def test_fetch_status_without_tasks():
 
 
 def test_dotted_dbt_test_with_upstream_report_is_tests_kind():
-    ti = _ti({"r1": {"dbt_tasks.dbt-test-orders-dt": "failed",
+    ti = _ti({"r1": {"dbt_tasks.dbt-test-orders": "failed",
                      "reports.refresh": "upstream_failed"}})
     res = classify_runs([{"dag_run_id": "r1", "state": "failed"}], ti, RX)
     assert res.kind == "tests"
-    assert res.failed_tasks == ["dbt_tasks.dbt-test-orders-dt"]
+    assert res.failed_tasks == ["dbt_tasks.dbt-test-orders"]
     assert res.upstream_failed == 1

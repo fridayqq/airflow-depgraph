@@ -136,7 +136,27 @@ def test_fetch_live_writes_snapshot(tmp_path, live, capsys):
 def test_fetch_bad_payload_exit_1(tmp_path, live, monkeypatch, capsys):
     monkeypatch.setattr(FakeClient, "deps", {})
     assert cli.main(["fetch", "--url", URL, "-o", str(tmp_path / "s.json")]) == 1
-    assert "unexpected /ui/dependencies payload" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "unexpected /ui/dependencies payload" in err
+    assert "(Airflow 3.3.2)" in err
+
+
+def test_render_missing_snapshot_is_clean_error(tmp_path, capsys):
+    assert cli.main(["render", str(tmp_path / "missing.json")]) == 1
+    assert capsys.readouterr().err.startswith("error:")
+
+
+def test_render_output_in_missing_dir_is_clean_error(tmp_path, capsys):
+    assert cli.main(["render", FIX, "-o", str(tmp_path / "no" / "dir" / "g.html")]) == 1
+    assert capsys.readouterr().err.startswith("error:")
+
+
+@pytest.mark.parametrize("bad", ["0", "-1", "x"])
+def test_depth_must_be_positive(bad, capsys):
+    with pytest.raises(SystemExit) as ei:
+        cli.main(["downstream", "dag_a", FIX, "--depth", bad])
+    assert ei.value.code == 2
+    assert ">= 1" in capsys.readouterr().err
 
 
 def test_downstream_live(live, capsys):

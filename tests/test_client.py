@@ -25,8 +25,9 @@ def test_login_posts_and_stores_token():
 def test_login_401_message():
     op = fake_opener({"/auth/token": 401})
     with pytest.raises(ApiError, match=r"authentication failed \(401\)") as ei:
-        AirflowClient.login(URL, "u", "p", opener=op)
+        AirflowClient.login(URL, "u", "secret-pw", opener=op)
     assert ei.value.status == 401
+    assert "secret-pw" not in str(ei.value)
 
 
 def test_dependencies_403_message():
@@ -79,3 +80,25 @@ def test_ids_are_quoted_and_lists_unwrapped():
 def test_version_swallows_errors():
     assert AirflowClient(URL, "t", opener=fake_opener({"/api/v2/version": {"version": "3.1.0"}})).version() == "3.1.0"
     assert AirflowClient(URL, "t", opener=fake_opener({"/api/v2/version": 500})).version() is None
+
+
+def _raw_opener(body=None, exc=None):
+    def opener(req, timeout=None):
+        if exc:
+            raise exc
+        from tests.conftest import _Resp
+        return _Resp(body)
+    return opener
+
+
+def test_non_json_body_is_api_error():
+    c = AirflowClient(URL, "t", opener=_raw_opener(b"<html>login</html>"))
+    with pytest.raises(ApiError, match="non-JSON response from /ui/dependencies"):
+        c.dependencies()
+
+
+def test_timeout_and_os_error_are_api_errors():
+    with pytest.raises(ApiError, match="timed out"):
+        AirflowClient(URL, "t", opener=_raw_opener(exc=TimeoutError())).dependencies()
+    with pytest.raises(ApiError, match="network error"):
+        AirflowClient(URL, "t", opener=_raw_opener(exc=ConnectionResetError("reset"))).dependencies()

@@ -51,8 +51,13 @@ def _client(s: Settings, args: argparse.Namespace) -> AirflowClient:
 
 
 def _live_snapshot(client: AirflowClient, s: Settings, node_id: str | None) -> Snapshot:
-    nodes, edges = snapmod.validate_payload(client.dependencies(node_id))
-    return snapmod.new(nodes, edges, s.url, client.version())
+    raw = client.dependencies(node_id)
+    version = client.version()
+    try:
+        nodes, edges = snapmod.validate_payload(raw)
+    except SnapshotError as exc:
+        raise SnapshotError(f"{exc} (Airflow {version or 'version unknown'})") from None
+    return snapmod.new(nodes, edges, s.url, version)
 
 
 def _walk(snap: Snapshot, dag: str, direction: str, depth: int) -> list[Hit]:
@@ -104,6 +109,16 @@ def _load_override(path: str | None) -> dict | None:
     if not isinstance(data, dict):
         raise SnapshotError(f"status file {path} must be a JSON object")
     return data
+
+
+def _depth(value: str) -> int:
+    try:
+        n = int(value)
+    except ValueError:
+        n = 0
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"must be an integer >= 1, got {value!r}")
+    return n
 
 
 def _check_html_output(output: str) -> None:
@@ -251,14 +266,17 @@ def _parser() -> argparse.ArgumentParser:
     common.add_argument("--token", help="bearer token (skips login)")
 
     fetch_opts = argparse.ArgumentParser(add_help=False)
-    fetch_opts.add_argument("--with-status", action="store_true", default=None)
-    fetch_opts.add_argument("--with-tasks", action="store_true", default=None)
-    fetch_opts.add_argument("--node-id", help="fetch only the subgraph around this node")
+    fetch_opts.add_argument("--with-status", action="store_true", default=None,
+                            help="also fetch the latest run status of every DAG")
+    fetch_opts.add_argument("--with-tasks", action="store_true", default=None,
+                            help="also fetch the task ids of every DAG")
+    fetch_opts.add_argument("--node-id", help="fetch only the subgraph around this node id, e.g. dag:my_dag")
 
     render_opts = argparse.ArgumentParser(add_help=False)
-    render_opts.add_argument("--title")
-    render_opts.add_argument("--highlight", help="regex of DAG ids to highlight")
-    render_opts.add_argument("--status", metavar="FILE", help="JSON {dag_id: {kind, paused, date}}")
+    render_opts.add_argument("--title", help="title of the rendered page")
+    render_opts.add_argument("--highlight", help="regex of DAG ids to highlight (matched against ids without the dag: prefix)")
+    render_opts.add_argument("--status", metavar="FILE",
+                             help="JSON {dag_id: {kind, paused, date}} that overrides the snapshot status")
 
     p = argparse.ArgumentParser(prog="airflow-depgraph",
                                 description="Airflow 3 cross-DAG dependency graph")
@@ -282,8 +300,8 @@ def _parser() -> argparse.ArgumentParser:
         q = sub.add_parser(name, parents=[common], help=f"list {name} DAGs")
         q.add_argument("dag")
         q.add_argument("snapshot", nargs="?", help="snapshot file; omit to query live")
-        q.add_argument("--depth", type=int, default=5)
-        q.add_argument("--json", action="store_true")
+        q.add_argument("--depth", type=_depth, default=5, help="maximum DAG hops, at least 1 (default 5)")
+        q.add_argument("--json", action="store_true", help="print machine-readable JSON")
         q.add_argument("--tasks-matching", nargs="?", const=True, metavar="REGEX",
                        help="keep DAGs having a task matching REGEX (default: preset task_query_regex)")
         q.set_defaults(func=lambda a, d=name: _query(a, d))
@@ -292,7 +310,7 @@ def _parser() -> argparse.ArgumentParser:
     t.add_argument("dag")
     t.add_argument("snapshot", nargs="?")
     t.add_argument("--regex")
-    t.add_argument("--json", action="store_true")
+    t.add_argument("--json", action="store_true", help="print a JSON list")
     t.set_defaults(func=cmd_tasks)
 
     pr = sub.add_parser("presets", parents=[common], help="list presets")
@@ -305,7 +323,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         return args.func(args)
-    except (SnapshotError, PresetError, CredentialsError, ApiError, CliError) as exc:
+    except (SnapshotError, PresetError, CredentialsError, ApiError, CliError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
