@@ -1,0 +1,94 @@
+{
+  "format": 1,
+  "fetched_at": "2026-10-22T06:00:00Z",
+  "source": "https://airflow.example.com",
+  "airflow_version": "3.3.2",
+  "nodes": [
+    {"id": "dag:dag_a", "label": "dag_a", "type": "dag"},
+    {"id": "dag:dag_b", "label": "dag_b", "type": "dag"},
+    {"id": "dag:dag_c", "label": "dag_c", "type": "dag"},
+    {"id": "dag:dag_d", "label": "dag_d", "type": "dag"},
+    {"id": "dag:dag_e", "label": "dag_e", "type": "dag"},
+    {"id": "dag:dag_f", "label": "dag_f", "type": "dag"},
+    {"id": "dag:dag_g", "label": "dag_g", "type": "dag"},
+    {"id": "dag:dag_h", "label": "dag_h", "type": "dag"},
+    {"id": "dag:dag_i", "label": "dag_i", "type": "dag"},
+    {"id": "dag:dag_j", "label": "dag_j", "type": "dag"},
+    {"id": "dag:dag_k_report", "label": "dag_k_report", "type": "dag"},
+    {"id": "dag:dag_l_report", "label": "dag_l_report", "type": "dag"},
+    {"id": "asset:1", "label": "team-orders", "type": "asset"},
+    {"id": "asset:2", "label": "orders_clean", "type": "asset"},
+    {"id": "asset:3", "label": "team-customers", "type": "asset"},
+    {"id": "asset:4", "label": "team-billing", "type": "asset"},
+    {"id": "asset:5", "label": "daily_summary", "type": "asset"},
+    {"id": "trigger:1", "label": "orders_ready", "type": "trigger"},
+    {"id": "sensor:1", "label": "customers_file", "type": "sensor"}
+  ],
+  "edges": [
+    {"source_id": "dag:dag_a", "target_id": "asset:1"},
+    {"source_id": "asset:1", "target_id": "dag:dag_b"},
+    {"source_id": "asset:1", "target_id": "dag:dag_f"},
+    {"source_id": "dag:dag_b", "target_id": "asset:2"},
+    {"source_id": "asset:2", "target_id": "dag:dag_c"},
+    {"source_id": "dag:dag_c", "target_id": "trigger:1"},
+    {"source_id": "trigger:1", "target_id": "dag:dag_d"},
+    {"source_id": "trigger:1", "target_id": "dag:dag_i"},
+    {"source_id": "dag:dag_d", "target_id": "asset:4"},
+    {"source_id": "dag:dag_f", "target_id": "asset:3"},
+    {"source_id": "asset:3", "target_id": "dag:dag_g"},
+    {"source_id": "dag:dag_g", "target_id": "asset:4"},
+    {"source_id": "asset:4", "target_id": "dag:dag_k_report"},
+    {"source_id": "dag:dag_a", "target_id": "sensor:1"},
+    {"source_id": "sensor:1", "target_id": "dag:dag_e"},
+    {"source_id": "dag:dag_e", "target_id": "asset:5"},
+    {"source_id": "asset:5", "target_id": "dag:dag_l_report"},
+    {"source_id": "dag:dag_h", "target_id": "asset:3"},
+    {"source_id": "dag:dag_j", "target_id": "asset:2"}
+  ],
+  "dags": {
+    "dag_a": {
+      "is_paused": false,
+      "schedule": "0 5 * * *",
+      "owners": ["team-orders"],
+      "last_run": {
+        "state": "failed",
+        "kind": "pipeline",
+        "run_after": "2026-10-22T05:00:00Z",
+        "run_id": "scheduled__2026-10-22T05:00:00+00:00",
+        "failed_tasks": ["load"]
+      },
+      "tasks": ["extract", "load", "notify"]
+    },
+    "dag_d": {
+      "is_paused": false,
+      "schedule": "Asset",
+      "owners": ["team-billing"],
+      "last_run": {
+        "state": "failed",
+        "kind": "tests",
+        "run_after": "2026-10-22T05:30:00Z",
+        "run_id": "triggered__2026-10-22T05:30:00+00:00",
+        "failed_tasks": ["dbt_test"]
+      }
+    },
+    "dag_l_report": {
+      "is_paused": false,
+      "schedule": "Asset",
+      "owners": ["team-reporting"],
+      "last_run": {
+        "state": "success",
+        "kind": null,
+        "run_after": "2026-10-22T06:00:00Z",
+        "run_id": "triggered__2026-10-22T06:00:00+00:00",
+        "failed_tasks": []
+      },
+      "tasks": ["refresh_dashboard"]
+    },
+    "dag_h": {
+      "is_paused": true,
+      "schedule": null,
+      "owners": ["team-customers"],
+      "last_run": null
+    }
+  }
+}
