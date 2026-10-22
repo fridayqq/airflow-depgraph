@@ -50,10 +50,12 @@ def test_all_skipped_success_is_ignored_then_failed_found():
 
 
 def test_failed_tests_only_kind():
-    ti = _ti({"r1": {"dbt_test": "failed", "x_test": "upstream_failed"}})
+    ti = _ti({"r1": {"dbt_test": "failed", "report_a": "upstream_failed",
+                     "report_b": "upstream_failed", "ok": "success"}})
     res = classify_runs([{"dag_run_id": "r1", "state": "failed"}], ti, RX)
     assert res.kind == "tests"
-    assert res.failed_tasks == ["dbt_test", "x_test"]
+    assert res.failed_tasks == ["dbt_test"]
+    assert res.upstream_failed == 2
 
 
 def test_failed_mixed_kind_pipeline():
