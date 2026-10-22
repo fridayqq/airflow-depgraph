@@ -1,0 +1,44 @@
+# Example airflow-depgraph preset. Copy it to ~/.config/airflow-depgraph/presets/<name>.toml
+# and uncomment what you need. Credentials are never stored here, only env var names or a command.
+
+# Preset name, shown in the output.
+name = "example"
+
+# Base URL of the Airflow webserver.
+# url = "https://airflow.example.com"
+
+# Name of the env var that holds the Airflow user name.
+# user_env = "AIRFLOW_USER"
+
+# Name of the env var that holds the Airflow password.
+# password_env = "AIRFLOW_PASSWORD"
+
+# Shell command that prints the password to stdout (used when the env var is empty).
+# password_cmd = "pass show airflow/example"
+
+# Also fetch the latest run status of every DAG.
+# with_status = false
+
+# Also fetch the tasks of every DAG.
+# with_tasks = false
+
+# Title of the rendered page.
+# title = "Airflow dependency graph"
+
+# Prefix removed from asset names when they are shown as labels.
+# asset_label_strip_prefix = "s3://example-bucket/"
+
+# Regex of node ids to highlight in the rendered graph.
+# highlight = "^example_"
+
+# Legend label for the highlighted nodes.
+# highlight_label = "Highlight"
+
+# Regex that marks a task as a test task.
+# tests_task_regex = '(^|\.)dbt_test|_test$'
+
+# Regex that selects which tasks to load; all tasks when unset.
+# task_query_regex = "^(extract|load)_"
+
+# How many recent runs to look at when computing the status.
+# status_runs_lookback = 5
