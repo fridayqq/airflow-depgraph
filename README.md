@@ -18,6 +18,8 @@ Only explicit Airflow dependencies are visible: asset events, `TriggerDagRunOper
 
 ## Install
 
+Python 3.11 or newer is required.
+
 ```bash
 uv tool install git+https://github.com/fridayqq/airflow-depgraph
 # or
@@ -48,7 +50,14 @@ airflow-depgraph fetch --with-tasks -o deps.json
 airflow-depgraph downstream my_dag --tasks-matching 'refresh|report' deps.json
 ```
 
-`upstream` works the same way. `tasks <dag> [snapshot]` lists the tasks of a DAG. If you omit the snapshot argument, `downstream`, `upstream` and `tasks` query the live instance. `--depth N` limits the traversal and `--json` prints machine-readable output.
+`upstream` works the same way. `--depth N` must be at least 1. `tasks <dag> [snapshot]` lists the tasks of a DAG. If you omit the snapshot argument, `downstream`, `upstream` and `tasks` query the live instance. `--depth N` limits the traversal and `--json` prints machine-readable output.
+
+Other options worth knowing:
+
+- `--status FILE` (on `render` and `graph`) overrides the status of DAGs from a JSON file `{dag_id: {kind, paused, date}}`.
+- `--node-id dag:my_dag` (on `fetch` and `graph`) fetches only the subgraph around one node.
+- `--title` sets the page title and `--highlight REGEX` highlights DAG ids that match.
+- `presets --preset NAME` prints the resolved settings of a preset (never the token).
 
 ## Credentials
 
@@ -59,7 +68,7 @@ The password is never accepted as a flag, so it stays out of shell history and p
 3. The command in `password_cmd`, for example `pass show airflow/example`, taking its stdout.
 4. An interactive prompt, when stdin is a terminal.
 
-The user comes from `--user`, the variable named by `user_env` (`AIRFLOW_DEPGRAPH_USER` by default), or the preset. `--token` supplies a bearer token and skips the login.
+The user comes from `--user` or the variable named by `user_env` (`AIRFLOW_DEPGRAPH_USER` by default). A preset can only change the variable name through `user_env`, never hold the user itself. `--token` supplies a bearer token and skips the login.
 
 ## Presets
 
@@ -103,13 +112,14 @@ name = "example"
 # title = "Airflow dependency graph"
 # Prefix removed from asset names when they are shown as labels.
 # asset_label_strip_prefix = "s3://example-bucket/"
-# Regex of node ids to highlight in the rendered graph.
+# Regex matched against DAG ids (without the dag: prefix); matching DAG nodes are highlighted.
+# Assets, triggers and sensors are never highlighted.
 # highlight = "^example_"
 # Legend label for the highlighted nodes.
 # highlight_label = "Highlight"
 # Regex that marks a task as a test task (case-insensitive).
 # tests_task_regex = '(^|[._-])tests?([._-]|$)'
-# Regex that selects which tasks to load; all tasks when unset.
+# Default regex for --tasks-matching. Nothing is filtered at load time; all tasks are fetched.
 # task_query_regex = "^(extract|load)_"
 # How many recent runs to look at when computing the status.
 # status_runs_lookback = 5
@@ -120,11 +130,11 @@ name = "example"
 The page is a single HTML file with d3 inlined, so it works offline.
 
 - **Layout.** Node size grows with the number of transitive downstream DAGs. The shape shows the node type: DAG, asset, trigger or sensor.
-- **Status.** With `--with-status`, a red ring marks a pipeline failure and an amber ring marks a failure that is tests only. Dark mode follows the system setting.
+- **Status.** With `--with-status`, a red ring marks a pipeline failure and an amber ring marks a failure that is tests only. Paused failing DAGs get no ring. A DAG with no decisive run in the lookback has no status. Dark mode follows the system setting.
 - **Click.** Selecting a node highlights its upstream and downstream chain and fills the side lists.
 - **Search.** Type a DAG name to focus it. `+dag` adds everything upstream, `dag+` everything downstream, and `2+dag+3` limits that to 2 levels up and 3 down.
 - **Toggles.** Hide assets, show only failing DAGs, and highlight the DAGs matched by the preset `highlight` regex.
-- **Hash flags.** The state lives in the URL fragment so a view can be shared: `#q=<name>,onlyFail,hideAssets,hl`.
+- **Hash flags.** The page writes its state to the URL fragment as you type or toggle, so a view can be shared: `#q=<text>,onlyFail,hideAssets,hl`. The search text is URL-encoded. Opening a page with such a fragment restores the view.
 
 ## How failing is decided
 
@@ -135,7 +145,7 @@ Status needs `--with-status` (or `with_status = true`). For each DAG:
 - Runs are examined newest first, up to `status_runs_lookback`.
 - Runs that are still running or queued are skipped. So are successful runs in which every task was skipped.
 - The first remaining run is the decisive one. If it succeeded, the DAG is healthy. If it failed, the DAG is failing.
-- A failing DAG is of kind `tests` when every task in state `failed` matches `tests_task_regex`. Otherwise it is a pipeline failure.
+- A failing DAG is of kind `tests` when every task in state `failed` matches `tests_task_regex`. Otherwise it is a pipeline failure. The regex is configurable because a pipeline task named like `load_test_data` would otherwise count as a test.
 - Tasks in state `upstream_failed` do not count, because they only inherit a failure.
 
 ## Snapshot format

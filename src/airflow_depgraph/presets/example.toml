@@ -28,7 +28,8 @@ name = "example"
 # Prefix removed from asset names when they are shown as labels.
 # asset_label_strip_prefix = "s3://example-bucket/"
 
-# Regex of node ids to highlight in the rendered graph.
+# Regex matched against DAG ids (without the dag: prefix); matching DAG nodes are highlighted.
+# Assets, triggers and sensors are never highlighted.
 # highlight = "^example_"
 
 # Legend label for the highlighted nodes.
@@ -38,7 +39,7 @@ name = "example"
 # Matches dbt-test-x, dbt_tasks.dbt-test-x, test_models, run_tests (case-insensitive).
 # tests_task_regex = '(^|[._-])tests?([._-]|$)'
 
-# Regex that selects which tasks to load; all tasks when unset.
+# Default regex for --tasks-matching. Nothing is filtered at load time; all tasks are fetched.
 # task_query_regex = "^(extract|load)_"
 
 # How many recent runs to look at when computing the status.
