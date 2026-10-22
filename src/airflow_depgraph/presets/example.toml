@@ -35,7 +35,8 @@ name = "example"
 # highlight_label = "Highlight"
 
 # Regex that marks a task as a test task.
-# tests_task_regex = '(^|\.)dbt_test|_test$'
+# Matches dbt-test-x, dbt_tasks.dbt-test-x, test_models, run_tests (case-insensitive).
+# tests_task_regex = '(^|[._-])tests?([._-]|$)'
 
 # Regex that selects which tasks to load; all tasks when unset.
 # task_query_regex = "^(extract|load)_"

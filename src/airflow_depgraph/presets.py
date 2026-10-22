@@ -31,7 +31,7 @@ class Settings:
     asset_label_strip_prefix: str | None = None
     highlight: str | None = None
     highlight_label: str = "Highlight"
-    tests_task_regex: str = r"(^|\.)dbt_test|_test$"
+    tests_task_regex: str = r"(^|[._-])tests?([._-]|$)"
     task_query_regex: str | None = None
     status_runs_lookback: int = 5
     preset_name: str | None = None

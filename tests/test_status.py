@@ -2,7 +2,7 @@ from airflow_depgraph.client import ApiError
 from airflow_depgraph.presets import Settings
 from airflow_depgraph.status import classify_runs, fetch_status
 
-RX = r"(^|\.)dbt_test|_test$"
+RX = Settings().tests_task_regex
 
 
 def _ti(mapping):
@@ -108,3 +108,12 @@ def test_fetch_status_isolates_errors():
 def test_fetch_status_without_tasks():
     out = fetch_status(FakeClient(), ["dag_a"], Settings(), with_tasks=False)
     assert "tasks" not in out["dag_a"]
+
+
+def test_dotted_dbt_test_with_upstream_report_is_tests_kind():
+    ti = _ti({"r1": {"dbt_tasks.dbt-test-orders-dt": "failed",
+                     "reports.refresh": "upstream_failed"}})
+    res = classify_runs([{"dag_run_id": "r1", "state": "failed"}], ti, RX)
+    assert res.kind == "tests"
+    assert res.failed_tasks == ["dbt_tasks.dbt-test-orders-dt"]
+    assert res.upstream_failed == 1

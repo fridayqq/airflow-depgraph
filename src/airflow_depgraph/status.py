@@ -38,7 +38,7 @@ def classify_runs(runs: list[dict], task_instances: Callable[[str], list[dict]],
             failed = [ti["task_id"] for ti in instances if ti.get("state") == "failed"]
             upstream = sum(1 for ti in instances if ti.get("state") == "upstream_failed")
             only_tests = bool(failed) and all(
-                re.search(tests_task_regex, t) for t in failed)
+                re.search(tests_task_regex, t, re.IGNORECASE) for t in failed)
             return LastRun("failed", "tests" if only_tests else "pipeline",
                            run.get("run_after"), run_id, failed, upstream)
     return None
