@@ -2,11 +2,19 @@
 
 Fetch, query and render the Airflow 3 cross-DAG dependency graph (DAG → asset / trigger / sensor → DAG) from any Airflow 3 instance. It uses only the Python standard library. The result is a JSON snapshot you can query offline, plus one self-contained HTML page.
 
+![How the pieces fit: Airflow → fetch → snapshot → render → HTML, with presets and credentials feeding fetch](docs/images/overview.png)
+
 Things to know before you use it:
 
 - **Airflow 3 only.** Airflow 2 has no `/ui/dependencies` endpoint, so it is not supported.
 - **Internal endpoint.** `/ui/dependencies` belongs to the Airflow UI, not the public API. It may change between releases. For example, 3.1.8 started filtering it by DAG permissions. The tool was developed against Airflow 3.3.2.
 - **Pure cron DAGs are absent.** A DAG with no asset, trigger or sensor link has no edges, so it does not appear in the graph.
+
+## What the graph contains
+
+![Graph model: DAGs linked through assets, triggers and sensors; link nodes do not count as hops and are reported as "via"](docs/images/graph-model.png)
+
+Only explicit Airflow dependencies are visible: asset events, `TriggerDagRunOperator` triggers and sensors. `downstream`/`upstream` count hops between DAGs; the asset, trigger or sensor that joins two DAGs is reported as `via`. A DAG reachable by several paths is listed once, at its shortest hop count. Table-level coupling without an asset is invisible here.
 
 ## Install
 
@@ -122,6 +130,8 @@ The page is a single HTML file with d3 inlined, so it works offline.
 
 Status needs `--with-status` (or `with_status = true`). For each DAG:
 
+![Decision flow: newest runs first, skip running/queued and empty successes, the first decisive run wins; failed runs are "tests only" when every failed task matches tests_task_regex](docs/images/status-rule.png)
+
 - Runs are examined newest first, up to `status_runs_lookback`.
 - Runs that are still running or queued are skipped. So are successful runs in which every task was skipped.
 - The first remaining run is the decisive one. If it succeeded, the DAG is healthy. If it failed, the DAG is failing.
@@ -162,6 +172,8 @@ Snapshots are JSON, format 1:
 ```bash
 uv run pytest
 ```
+
+The diagrams in this README are drawn with Excalidraw. Sources live in `docs/diagrams/*.excalidraw`; re-export the PNG/SVG files in `docs/images/` after editing them.
 
 ## License
 
