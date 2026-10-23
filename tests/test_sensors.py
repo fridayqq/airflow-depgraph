@@ -258,3 +258,63 @@ def test_403_on_one_sensor_lookup_is_an_error_entry(kind):
     c = FakeClient(runs={"waiter": ["r1"]}, tis={("waiter", "r1", "wait"): {"rendered_fields": {}}},
                    fail={kind: ApiError("403", 403, "/x")})
     assert _one(c)["source"] == "error"
+
+
+def test_fetch_tasks_stops_calling_after_a_401():
+    calls = []
+
+    class C:
+        def tasks(self, dag_id):
+            calls.append(dag_id)
+            if dag_id == "first":
+                raise ApiError("401", 401, "/tasks")
+            return []
+    with pytest.raises(ApiError):
+        fetch_tasks(C(), ["first"] + [f"d{i}" for i in range(50)], workers=1)
+    import time
+    time.sleep(0.05)
+    assert len(calls) < 5
+
+
+def test_resolve_dag_stops_when_the_run_is_cancelled():
+    import threading
+    from airflow_depgraph.sensors import _resolve_dag
+    stop = threading.Event()
+    stop.set()
+    c = FakeClient(sources={"waiter": "'dag_a'"})
+    assert _resolve_dag(c, "waiter", [sensor("s1"), sensor("s2")], KNOWN, stop) == []
+    assert c.calls == []
+
+
+def test_source_parsed_once_per_dag_and_deep_source_falls_back(monkeypatch):
+    import ast
+    import airflow_depgraph.sensors as sensors
+    parsed = []
+    real = ast.parse
+    monkeypatch.setattr(sensors.ast, "parse", lambda text, *a, **k: parsed.append(1) or real(text, *a, **k))
+    c = FakeClient(sources={"waiter": "x = 'dag_a'"})
+    infer_sensor_edges(c, KNOWN, {"waiter": [sensor("s1"), sensor("s2"), sensor("s3")]})
+    assert len(parsed) == 1
+
+    def boom(*a, **k):
+        raise RecursionError
+    monkeypatch.setattr(sensors.ast, "parse", boom)
+    assert parse_source("make('dag_a')", "wait", KNOWN, "waiter") == ["dag_a"]
+    monkeypatch.setattr(sensors.ast, "parse", lambda *a, **k: (_ for _ in ()).throw(MemoryError()))
+    assert parse_source("make('dag_a') + make('dag_b')", "wait", KNOWN, "waiter") == []
+
+
+def test_task_id_matches_full_id_first_and_short_name_only_if_unique():
+    two_groups = """
+with TaskGroup("g1"):
+    PythonSensor(task_id="wait", op_kwargs={"d": "dag_a"})
+with TaskGroup("g2"):
+    PythonSensor(task_id="wait", op_kwargs={"d": "dag_b"})
+"""
+    assert parse_source(two_groups, "g1.wait", KNOWN, "waiter") == []
+    full = """
+PythonSensor(task_id="g.wait", op_kwargs={"d": "dag_a"})
+PythonSensor(task_id="wait", op_kwargs={"d": "dag_b"})
+"""
+    assert parse_source(full, "g.wait", KNOWN, "waiter") == ["dag_a"]
+    assert parse_source(full, "wait", KNOWN, "waiter") == ["dag_b"]

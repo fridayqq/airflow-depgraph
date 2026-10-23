@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import re
+import threading
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -106,19 +107,36 @@ def _constants(nodes: Iterable[ast.AST]) -> Iterable[str]:
                 yield n.value
 
 
-def _sensor_scopes(tree: ast.Module, task_id: str) -> list[ast.AST]:
-    """The sensor's own call(s), its python_callable and its @task.sensor function."""
-    ids = {task_id, task_id.rsplit(".", 1)[-1]}       # task groups prefix the id
-    defs = {n.name: n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
-    scopes: list[ast.AST] = []
-    decorated: set[str] = set()
+def _sensor_defs(tree: ast.Module, name: str) -> list[ast.AST]:
+    """Functions decorated with *sensor whose task id (decorator task_id= or name) is `name`."""
+    out = []
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             for dec in node.decorator_list:
                 named = _str_kw(dec, "task_id") if isinstance(dec, ast.Call) else None
-                if _dotted(dec).lower().endswith("sensor") and (named or node.name) in ids:
-                    scopes.append(node)
-                    decorated.add(node.name)
+                if _dotted(dec).lower().endswith("sensor") and (named or node.name) == name:
+                    out.append(node)
+                    break
+    return out
+
+
+def _declared(tree: ast.Module, name: str) -> int:
+    calls = sum(1 for n in ast.walk(tree) if isinstance(n, ast.Call) and _str_kw(n, "task_id") == name)
+    return calls + len(_sensor_defs(tree, name))
+
+
+def _sensor_scopes(tree: ast.Module, task_id: str) -> list[ast.AST]:
+    """The sensor's own call(s), its python_callable and its @task.sensor function. The full
+    task id is tried first; the name without a task-group prefix only if unique in the file."""
+    short = task_id.rsplit(".", 1)[-1]
+    if not _declared(tree, task_id) and short != task_id:
+        if _declared(tree, short) != 1:
+            return []
+        task_id = short
+    ids = {task_id}
+    defs = {n.name: n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    scopes: list[ast.AST] = list(_sensor_defs(tree, task_id))
+    decorated = {n.name for n in scopes}
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -132,15 +150,32 @@ def _sensor_scopes(tree: ast.Module, task_id: str) -> list[ast.AST]:
     return scopes
 
 
-def parse_source(text: str, task_id: str, known: set[str], own: str) -> list[str]:
-    """DAG ids named in the sensor's own code; else the file's literals if they name one DAG."""
+_UNPARSED = object()
+
+
+def parse_tree(text: str) -> ast.Module | None:
+    """The module AST, or None when it cannot be parsed (bad syntax, too deep, too big)."""
+    try:
+        return ast.parse(text or "")
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return None
+
+
+def parse_source(text: str, task_id: str, known: set[str], own: str,
+                 tree: object = _UNPARSED) -> list[str]:
+    """DAG ids named in the sensor's own code; else the file's literals if they name one DAG.
+    `tree` is parse_tree(text) when the caller already has it."""
     text = text or ""
     whole = _single(_matches(_SOURCE_LITERAL.findall(text), known, own))
-    try:
-        tree = ast.parse(text)
-    except (SyntaxError, ValueError):
+    if tree is _UNPARSED:
+        tree = parse_tree(text)
+    if tree is None:
         return whole
-    return _matches(_constants(_sensor_scopes(tree, task_id)), known, own) or whole
+    try:
+        scoped = _matches(_constants(_sensor_scopes(tree, task_id)), known, own)
+    except RecursionError:
+        scoped = []
+    return scoped or whole
 
 
 def parse_log(text: str, known: set[str], own: str) -> list[str]:
@@ -174,7 +209,8 @@ _FAILED = object()
 
 def resolve_sensor(client: AirflowClient, dag_id: str, task: dict, known: set[str],
                    source_cache: dict[str, object]) -> dict:
-    """Each stage fails on its own; 401/403 abort everything (ApiError is re-raised)."""
+    """Each stage fails on its own; only a 401 aborts everything (that ApiError is re-raised).
+    source_cache holds (source text, parsed tree) per DAG, or _FAILED."""
     task_id = task["task_id"]
     failed = False
     ti = None
@@ -191,7 +227,8 @@ def resolve_sensor(client: AirflowClient, dag_id: str, task: dict, known: set[st
                           kind="guard" if states == ["running"] else "data")
     if dag_id not in source_cache:
         try:
-            source_cache[dag_id] = client.dag_source(dag_id)
+            text = client.dag_source(dag_id)
+            source_cache[dag_id] = (text, parse_tree(text))
         except Exception as exc:  # noqa: BLE001
             if _auth_error(exc):
                 raise
@@ -199,7 +236,7 @@ def resolve_sensor(client: AirflowClient, dag_id: str, task: dict, known: set[st
     source = source_cache[dag_id]
     if source is _FAILED:
         failed = True
-    elif targets := parse_source(source, task_id, known, dag_id):
+    elif targets := parse_source(source[0], task_id, known, dag_id, tree=source[1]):
         return _entry(dag_id, task, "source", targets=targets)
     if ti and ti.get("dag_run_id"):
         try:
@@ -214,10 +251,13 @@ def resolve_sensor(client: AirflowClient, dag_id: str, task: dict, known: set[st
     return _entry(dag_id, task, "error" if failed else "none")
 
 
-def _resolve_dag(client: AirflowClient, dag_id: str, tasks: list[dict], known: set[str]) -> list[dict]:
+def _resolve_dag(client: AirflowClient, dag_id: str, tasks: list[dict], known: set[str],
+                 stop: threading.Event | None = None) -> list[dict]:
     cache: dict[str, object] = {}   # the DAG source is fetched once per DAG
     results = []
     for task in tasks:
+        if stop is not None and stop.is_set():   # another DAG hit a 401: stop calling
+            break
         try:
             results.append(resolve_sensor(client, dag_id, task, known, cache))
         except Exception as exc:  # noqa: BLE001 - one broken sensor must not stop the others
@@ -237,8 +277,11 @@ def fetch_tasks(client: AirflowClient, dag_ids: list[str],
             if exc.status in ABORT_STATUSES:
                 raise
             return None
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
         return dict(zip(dag_ids, pool.map(one, dag_ids)))
+    finally:   # after a 401, queued calls are dropped instead of being sent
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def infer_sensor_edges(client: AirflowClient, catalog_ids: Iterable[str],
@@ -254,13 +297,16 @@ def infer_sensor_edges(client: AirflowClient, catalog_ids: Iterable[str],
                 and is_candidate(t.get("operator_name"))]
             for d, tasks in tasks_by_dag.items() if tasks is not None}
     jobs = {d: ts for d, ts in jobs.items() if ts}
-    pool = ThreadPoolExecutor(max_workers=workers)
+    pool, stop = ThreadPoolExecutor(max_workers=workers), threading.Event()
     try:
-        futures = {pool.submit(_resolve_dag, client, d, ts, known): d for d, ts in jobs.items()}
+        futures = {pool.submit(_resolve_dag, client, d, ts, known, stop): d for d, ts in jobs.items()}
         for done, fut in enumerate(as_completed(futures), 1):
             results.extend(fut.result())
             if progress:
                 progress(f"{done}/{len(futures)} {futures[fut]}")
+    except BaseException:
+        stop.set()
+        raise
     finally:
-        pool.shutdown(wait=True, cancel_futures=True)
+        pool.shutdown(wait=False, cancel_futures=True)
     return sorted(results, key=lambda r: (r["dag"], r["task"]))

@@ -205,3 +205,12 @@ def test_view_drops_inferred_sensors_of_stale_dags(inferred_snapshot):
         {"dag": "dag_m_stale", "task": "w", "source": "rendered", "targets": ["dag_a"], "kind": "data"}])
     ids = set(_by_id(build_view(snap, Settings())))
     assert "sensor-inferred:dag_m_stale:w" not in ids and "dag:dag_m_stale" not in ids
+
+
+def test_view_drops_inferred_sensors_whose_targets_are_all_stale(inferred_snapshot):
+    import dataclasses
+    extra = [{"dag": "dag_a", "task": "w", "source": "rendered", "targets": ["dag_m_stale"], "kind": "data"},
+             {"dag": "dag_b", "task": "w", "source": "rendered", "targets": ["dag_m_stale", "dag_j"], "kind": "data"}]
+    snap = dataclasses.replace(inferred_snapshot, inferred=inferred_snapshot.inferred + extra)
+    ids = set(_by_id(build_view(snap, Settings())))
+    assert "sensor-inferred:dag_a:w" not in ids and "sensor-inferred:dag_b:w" in ids

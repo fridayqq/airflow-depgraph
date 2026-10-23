@@ -226,7 +226,8 @@ def test_inference_refresh_uses_token_and_respects_interval(cache, tmp_path):
     assert at == 1000.0 and InferClient.made == [tok]
     assert inferred == [{"dag": "waiter", "task": "wait_a", "operator": "PythonSensor",
                          "source": "rendered", "targets": ["a"], "target_tasks": [], "kind": "data"}]
-    assert tok not in (tmp_path / "airflow-depgraph-inferred.json").read_text()
+    state = (tmp_path / c.state_name).read_text()
+    assert tok not in state and '"api_url": "u"' in state
     t[0] = 1030
     assert not c.due()
     t[0] = 1061
@@ -406,3 +407,86 @@ def test_rejected_token_is_never_offered():
     b.page("tok", None, False)
     b.page("tok", None, False)                # cache hit offers again
     assert b.inference.offered == ["tok", "tok"]
+
+
+def test_default_state_dir_is_private_per_user(tmp_path, monkeypatch):
+    import os
+    import stat
+    from airflow_depgraph import web
+    monkeypatch.delenv("AIRFLOW_DEPGRAPH_STATE_DIR", raising=False)
+    monkeypatch.setattr(web.tempfile, "gettempdir", lambda: str(tmp_path))
+    c = web.InferenceCache("u", 60, start_thread=False)
+    assert c.state_dir == tmp_path / f"airflow-depgraph-{os.geteuid()}"
+    assert stat.S_IMODE(os.lstat(c.state_dir).st_mode) == 0o700 and c._shared
+
+
+@pytest.mark.parametrize("make", ["group_writable", "symlink"])
+def test_unsafe_state_dir_falls_back_to_per_process(tmp_path, monkeypatch, make, caplog):
+    import os
+    from airflow_depgraph import web
+    real = tmp_path / "real"
+    real.mkdir(mode=0o700)
+    target = real
+    if make == "group_writable":
+        os.chmod(real, 0o770)
+    else:
+        target = tmp_path / "link"
+        target.symlink_to(real)
+    monkeypatch.setenv("AIRFLOW_DEPGRAPH_STATE_DIR", str(target))
+    c = web.InferenceCache("u", 60, start_thread=False)
+    assert c.state_dir == target and not c._shared and "not a private directory" in caplog.text
+
+
+def test_state_file_symlink_and_foreign_instance_are_ignored(cache, tmp_path):
+    import json
+    t = [1000.0]
+    c = cache(t)
+    other = tmp_path / "elsewhere.json"
+    other.write_text(json.dumps({"api_url": "u", "updated_at": 1, "entries": []}))
+    (tmp_path / c.state_name).symlink_to(other)
+    assert c.current() is None                                  # O_NOFOLLOW
+    (tmp_path / c.state_name).unlink()
+    (tmp_path / c.state_name).write_text(json.dumps({"api_url": "http://other", "updated_at": 1,
+                                                     "entries": []}))
+    assert c.current() is None                                  # another Airflow's file
+
+
+def test_two_instances_on_one_host_do_not_share_files(cache, tmp_path):
+    from airflow_depgraph.web import InferenceCache
+    t = [1000.0]
+    a = cache(t)
+    b = InferenceCache("http://second", 60, client_factory=InferClient, wall_clock=lambda: t[0],
+                       start_thread=False, state_dir=tmp_path)
+    try:
+        assert a.state_name != b.state_name and a.lock_name != b.lock_name
+        tok = _jwt({"exp": 9000})
+        a.offer(tok)
+        b.offer(tok)
+        assert a.refresh() is True and b.refresh() is True          # both lead their own instance
+        assert not list(tmp_path.glob("*.tmp"))
+    finally:
+        b.close()
+
+
+def test_lock_open_warning_is_rate_limited(cache, tmp_path, caplog):
+    t = [1000.0]
+    c = cache(t)
+    (tmp_path / c.lock_name).mkdir()                             # os.open on a directory fails
+    assert c.leader() is False and c.leader() is False
+    assert caplog.text.count("cannot open the inference lock file") == 1
+
+
+def test_narrower_catalog_keeps_previous_result(cache, monkeypatch, caplog):
+    t = [1000.0]
+    c = cache(t)
+    c.offer(_jwt({"exp": 9000}))
+    dags = ["a", "waiter"] + [f"d{i}" for i in range(8)]       # 10 DAGs
+    monkeypatch.setattr(InferClient, "list_dags", lambda self: [{"dag_id": d} for d in dags])
+    assert c.refresh() is True
+    del dags[-3:]                                               # 7 of 10: below 80 %
+    t[0] = 2000
+    assert c.refresh() is False and c.current()[1] == 1000.0
+    assert "saw 7 DAGs, the previous one 10" in caplog.text
+    dags.append("d7")                                           # 8 of 10: accepted
+    t[0] = 3000
+    assert c.refresh() is True and c.current()[1] == 3000

@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import json
 import logging
 import os
+import stat
 import tempfile
 import threading
 import time
@@ -37,9 +39,10 @@ INFER_POLL_SECONDS = 30
 INFER_RETRY_SECONDS = 300
 TOKEN_MARGIN_SECONDS = 15 * 60
 MAX_ERROR_SHARE = 0.2
+MIN_CATALOG_SHARE = 0.8         # a cycle seeing fewer DAGs than this share keeps the old result
 STATE_DIR_ENV = "AIRFLOW_DEPGRAPH_STATE_DIR"
-LOCK_NAME = "airflow-depgraph-infer.lock"
-STATE_NAME = "airflow-depgraph-inferred.json"
+LOCK_WARN_SECONDS = 600
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 log = logging.getLogger(__name__)
 
 
@@ -78,13 +81,27 @@ def loopback_url(base_url: str | None, port: int | str, override: str | None = N
     return f"http://127.0.0.1:{port}{base_path(base_url)}"
 
 
+def _private_dir(path: Path) -> bool:
+    """Create `path` (0700) if missing; True only for a real directory owned by this user that
+    nobody else may write to (no symlink, no group/other write bit)."""
+    try:
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return (stat.S_ISDIR(st.st_mode) and not stat.S_ISLNK(st.st_mode)
+            and st.st_uid == os.geteuid() and not st.st_mode & (stat.S_IWGRP | stat.S_IWOTH))
+
+
 class InferenceCache:
     """Latest inferred sensor links, refreshed in a daemon thread with a recent user's token.
 
     `offer()` takes tokens Airflow has just accepted and starts the thread. Only one process per
-    host refreshes: the holder of an flock on <state dir>/LOCK_NAME. It writes the result to
-    <state dir>/STATE_NAME, and every process serves the newest content of that file. Tokens stay
-    in the process that received them and are never logged or written anywhere.
+    host and Airflow instance refreshes: the holder of an flock on the lock file in a private
+    state dir (owned by this user, mode 0700). It writes the result to the state file there, and
+    every process serves the newest content of that file. File names carry a hash of the API URL.
+    Without a safe state dir or fcntl, each process refreshes on its own. Tokens stay in the
+    process that received them and are never logged or written anywhere.
     """
 
     def __init__(self, api_url: str, interval_seconds: float, *,
@@ -96,8 +113,19 @@ class InferenceCache:
         self._client_factory, self._wall = client_factory, wall_clock
         self._builds = threading.BoundedSemaphore(1)      # inference has its own slot
         self._start_thread = start_thread
-        self.state_dir = Path(state_dir or os.environ.get(STATE_DIR_ENV) or tempfile.gettempdir())
+        explicit = state_dir or os.environ.get(STATE_DIR_ENV)
+        uid = f"-{os.geteuid()}" if hasattr(os, "geteuid") else ""
+        self.state_dir = Path(explicit) if explicit else Path(tempfile.gettempdir()) / f"airflow-depgraph{uid}"
+        tag = hashlib.sha256(api_url.encode()).hexdigest()[:12]
+        self.lock_name = f"airflow-depgraph-infer-{tag}.lock"
+        self.state_name = f"airflow-depgraph-inferred-{tag}.json"
         self._shared = (fcntl is not None) if shared is None else shared
+        if self._shared and not _private_dir(self.state_dir):
+            log.warning("airflow-depgraph: state dir %s is not a private directory of this user; "
+                        "every api-server process refreshes sensor links on its own", self.state_dir)
+            self._shared = False
+        self._dag_count: int | None = None
+        self._lock_warned: float | None = None
         self._lock = threading.Lock()
         self._token: str | None = None
         self._result: tuple[list[dict], float] | None = None
@@ -125,27 +153,39 @@ class InferenceCache:
             return self._result
 
     def _reload(self) -> None:
-        path = self.state_dir / STATE_NAME
         try:
-            st = path.stat()
-            if (st.st_mtime_ns, st.st_size) == self._file_seen:
-                return
-            data = json.loads(path.read_text(encoding="utf-8"))
-            entries, at = data["entries"], float(data["updated_at"])
-        except (OSError, ValueError, KeyError, TypeError):
+            fd = os.open(self.state_dir / self.state_name, os.O_RDONLY | _NOFOLLOW)
+        except OSError:
             return
-        if isinstance(entries, list):
+        with os.fdopen(fd, "r", encoding="utf-8") as f:
+            try:
+                st = os.fstat(f.fileno())
+                if st.st_uid != os.geteuid() or (st.st_mtime_ns, st.st_size) == self._file_seen:
+                    return
+                data = json.load(f)
+                entries, at = data["entries"], float(data["updated_at"])
+                count = data.get("dag_count")
+            except (OSError, ValueError, KeyError, TypeError):
+                return
+        if isinstance(entries, list) and data.get("api_url") == self.api_url:
             with self._lock:
                 self._file_seen, self._result = (st.st_mtime_ns, st.st_size), (entries, at)
+                if isinstance(count, int):
+                    self._dag_count = count
 
-    def _publish(self, entries: list[dict], at: float) -> None:
-        path = self.state_dir / STATE_NAME
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"updated_at": at, "entries": entries}, f)
-        os.replace(tmp, path)
-        st = path.stat()
+    def _publish(self, entries: list[dict], at: float, dag_count: int) -> None:
+        path = self.state_dir / self.state_name
+        fd, tmp = tempfile.mkstemp(dir=self.state_dir, prefix=self.state_name + ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump({"api_url": self.api_url, "updated_at": at, "dag_count": dag_count,
+                           "entries": entries}, f)
+            os.replace(tmp, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
+        st = os.stat(path, follow_symlinks=False)
         with self._lock:
             self._file_seen = (st.st_mtime_ns, st.st_size)
 
@@ -154,10 +194,12 @@ class InferenceCache:
         if not self._shared or self._lock_fd is not None:
             return True
         try:
-            self.state_dir.mkdir(parents=True, exist_ok=True)
-            fd = os.open(self.state_dir / LOCK_NAME, os.O_RDWR | os.O_CREAT, 0o600)
+            fd = os.open(self.state_dir / self.lock_name, os.O_RDWR | os.O_CREAT | _NOFOLLOW, 0o600)
         except OSError as exc:
-            log.warning("airflow-depgraph: cannot open the inference lock file: %s", exc)
+            now = time.monotonic()
+            if self._lock_warned is None or now - self._lock_warned >= LOCK_WARN_SECONDS:
+                self._lock_warned = now
+                log.warning("airflow-depgraph: cannot open the inference lock file: %s", exc)
             return False
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -198,7 +240,7 @@ class InferenceCache:
             return False
         try:
             with self._builds:
-                inferred = self._infer(token)
+                inferred, dag_count = self._infer(token)
         except ApiError as exc:
             # A 401 anywhere, or a 403 from the first call (list_dags): the token is no good.
             if exc.status in (401, 403):
@@ -214,6 +256,14 @@ class InferenceCache:
             log.exception("airflow-depgraph: sensor inference failed")
             self._retry_later()
             return False
+        with self._lock:
+            previous = self._dag_count if self._result is not None else None
+        if previous and dag_count < MIN_CATALOG_SHARE * previous:
+            log.warning("airflow-depgraph: this refresh saw %d DAGs, the previous one %d (a visitor "
+                        "with fewer permissions?); keeping the previous sensor links",
+                        dag_count, previous)
+            self._retry_later()
+            return False
         errors = sum(1 for e in inferred if e.get("source") == "error")
         if errors > MAX_ERROR_SHARE * len(inferred):
             log.warning("airflow-depgraph: %d of %d sensors failed to resolve; keeping the "
@@ -223,19 +273,20 @@ class InferenceCache:
         at = self._wall()
         if self._shared:
             try:
-                self._publish(inferred, at)
+                self._publish(inferred, at, dag_count)
             except OSError as exc:
                 log.warning("airflow-depgraph: cannot write the inference state file: %s", exc)
         with self._lock:
-            self._result, self._attempted = (inferred, at), at
+            self._result, self._attempted, self._dag_count = (inferred, at), at, dag_count
         return True
 
-    def _infer(self, token: str) -> list[dict]:
+    def _infer(self, token: str) -> tuple[list[dict], int]:
+        """(inferred entries, number of live DAGs this token sees)."""
         client = self._client_factory(self.api_url, token=token, timeout=CLIENT_TIMEOUT)
         catalog = snapmod.build_catalog(client.list_dags())
         ids = sorted(d for d, c in catalog.items() if not c.get("is_stale"))
         tasks = fetch_tasks(client, ids, workers=INFER_WORKERS)
-        return infer_sensor_edges(client, ids, tasks, workers=INFER_WORKERS)
+        return infer_sensor_edges(client, ids, tasks, workers=INFER_WORKERS), len(ids)
 
 
 class PageBuilder:

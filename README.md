@@ -302,12 +302,22 @@ never takes one of the page builds.
 - **Failed refreshes.** A refresh that is aborted (401, or 401/403 from the first `GET
   /api/v2/dags`), or in which more than 20 % of the entries are errors, keeps the previous links.
   An aborted one runs again with the next accepted visitor, any other after a few minutes.
-- **Several api-server workers.** One process per host refreshes: the one holding an `flock`
-  on `airflow-depgraph-infer.lock`. It writes the links to `airflow-depgraph-inferred.json`
-  (written atomically, mode 600), and every worker serves the newest content of that file. When
-  the refreshing process exits, another worker takes over on its next check. Both files live in
-  the system temp directory, or in `AIRFLOW_DEPGRAPH_STATE_DIR`. Without `fcntl` (not POSIX)
-  each process refreshes on its own.
+- **Several api-server workers.** One process per host and Airflow instance refreshes: the one
+  holding an `flock` on `airflow-depgraph-infer-<hash>.lock`. It writes the links to
+  `airflow-depgraph-inferred-<hash>.json`, and every worker serves the newest content of that
+  file. `<hash>` is derived from the api-server URL, and the file also records that URL, so two
+  Airflow instances on one host never read each other's links. When the refreshing process
+  exits, another worker takes over on its next check.
+- **State dir.** By default `<system temp dir>/airflow-depgraph-<uid>`, created with mode 0700;
+  `AIRFLOW_DEPGRAPH_STATE_DIR` sets another one. It must be a real directory (not a symlink)
+  owned by the api-server user, with no group or other write bit; otherwise the plugin logs a
+  warning and each process refreshes on its own. Files are opened without following symlinks,
+  written atomically (mode 600) and only read when owned by the same user. Without `fcntl` (not
+  POSIX) each process also refreshes on its own.
+- **Narrower visitor.** The background refresh runs as a recent visitor, so its result depends
+  on what that user may see. A refresh that sees fewer than 80 % of the DAGs of the previous one
+  keeps the previous links (and logs both counts). For complete links, make sure a
+  broadly-permitted account visits the page regularly.
 - **Header.** `sensor links: N, updated HH:MM UTC`, or that the first refresh is still running.
 
 The background calls run as the most recent visitor, and Airflow's audit log shows them as that
