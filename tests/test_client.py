@@ -4,6 +4,7 @@ import urllib.error
 import pytest
 
 from airflow_depgraph.client import AirflowClient, ApiError
+import http.client
 import http.server
 import threading
 
@@ -359,3 +360,75 @@ def test_proxy_variable_falls_back_to_urlopen(local_server, monkeypatch):
     monkeypatch.setattr(client_mod.urllib.request, "urlopen", fake_urlopen)
     assert AirflowClient(url, "t").dependencies() == {"nodes": []}
     assert used == [url + "/ui/dependencies"] and connections == []
+
+
+class _FakeHTTPResponse:
+    def __init__(self, status, body=b"", headers=None):
+        self.status, self.reason = status, "fake"
+        self.headers = headers or {}
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def getheader(self, name, default=None):
+        return self.headers.get(name, default)
+
+
+def _fake_connections(monkeypatch, responses):
+    """Patch the connection classes: each request pops one response, or raises it if it is an error."""
+    made = []
+
+    class FakeConn:
+        def __init__(self, host, port=None, timeout=None):
+            self.closed, self.targets = False, []
+            made.append(self)
+
+        def request(self, method, target, body=None, headers=None):
+            self.targets.append(target)
+
+        def getresponse(self):
+            item = responses.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(client_mod.http.client, "HTTPConnection", FakeConn)
+    monkeypatch.setattr(client_mod.http.client, "HTTPSConnection", FakeConn)
+    return made
+
+
+def test_redirect_on_pooled_path_goes_through_urlopen_with_one_note(monkeypatch, capsys):
+    for var in PROXY_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(client_mod, "_noted_redirects", set())
+    location = "https://airflow.example.com/airflow/ui/dependencies"
+    _fake_connections(monkeypatch, [_FakeHTTPResponse(302, headers={"Location": location}),
+                                    _FakeHTTPResponse(302, headers={"Location": location})])
+    used = []
+
+    def fake_urlopen(req, timeout=None):
+        used.append(req.full_url)
+        return _Resp(b'{"nodes": []}')
+
+    monkeypatch.setattr(client_mod.urllib.request, "urlopen", fake_urlopen)
+    c = AirflowClient(URL, "t")
+    assert c.dependencies() == {"nodes": []}
+    assert c.dependencies() == {"nodes": []}
+    assert used == [URL + "/ui/dependencies"] * 2
+    assert capsys.readouterr().err.splitlines() == [
+        f"note: {URL}/ui/dependencies redirects to {location}; "
+        "set the final URL to avoid the extra hop"]
+
+
+def test_dropped_keepalive_connection_is_reopened_once(monkeypatch):
+    for var in PROXY_VARS:
+        monkeypatch.delenv(var, raising=False)
+    made = _fake_connections(monkeypatch, [http.client.RemoteDisconnected("closed by server"),
+                                           _FakeHTTPResponse(200, b'{"nodes": []}')])
+    assert AirflowClient(URL, "t").dependencies() == {"nodes": []}
+    assert len(made) == 2 and made[0].closed
+    assert made[1].targets == ["/ui/dependencies"]

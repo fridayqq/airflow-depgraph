@@ -5,6 +5,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import sys
 import threading
 import time
 import urllib.error
@@ -20,6 +21,8 @@ RETRIES = 2                 # extra attempts after the first one
 LOGIN_RETRIES = 1           # POST /auth/token is retried at most once
 BACKOFF = (1, 3)            # seconds before the first and the second retry
 MAX_RETRY_AFTER = 30
+REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_noted_redirects: set[str] = set()   # URLs already reported as redirecting, once per process
 _PROXY_VARS = ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy")
 
 
@@ -27,6 +30,14 @@ def _proxied() -> bool:
     # http.client ignores proxy variables and urllib honours them, so with a proxy every request
     # goes through urlopen instead of the pooled connection.
     return any(os.environ.get(v) for v in _PROXY_VARS)
+
+
+def _note_redirect(url: str, location: str) -> None:
+    if url in _noted_redirects:
+        return
+    _noted_redirects.add(url)
+    print(f"note: {url} redirects to {location}; set the final URL to avoid the extra hop",
+          file=sys.stderr)
 
 
 def _retry_after(headers) -> float | None:
@@ -156,7 +167,13 @@ class AirflowClient:
             except BaseException:
                 self._drop()
                 raise
-            if not 200 <= resp.status < 300:   # redirects are not followed on this path
+            if resp.status in REDIRECT_STATUSES:
+                # http.client does not follow redirects; this one request goes through urlopen,
+                # which does. Fixing the URL in the configuration saves the extra hop.
+                _note_redirect(req.full_url, resp.getheader("Location") or "")
+                with urllib.request.urlopen(req, timeout=self.timeout) as followed:
+                    return followed.read()
+            if not 200 <= resp.status < 300:
                 raise urllib.error.HTTPError(req.full_url, resp.status, resp.reason,
                                              resp.headers, BytesIO(body))
             return body

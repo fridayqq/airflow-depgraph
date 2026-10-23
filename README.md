@@ -231,6 +231,8 @@ name = "example"
 
 `tags` is a TOML list of strings. In the environment it is comma-separated: `AIRFLOW_DEPGRAPH_TAGS="team-a,analytics"`.
 
+**Timeout, workers and retries.** `timeout` (seconds per API request, default 25) and `workers` (parallel requests for run status, task lists and sensor inference, default 8) are preset keys too, set as `AIRFLOW_DEPGRAPH_TIMEOUT` and `AIRFLOW_DEPGRAPH_WORKERS`, or with `--timeout` and `--workers` on fetch, graph, downstream, upstream, tasks and report. Requests keep one connection open per thread, and a response of 429, 502, 503 or 504, or a timeout or connection error, is retried up to twice, after 1 s and then 3 s (a numeric `Retry-After` header is honoured, capped at 30 s). Other 4xx errors are never retried, and the login request is retried at most once. Set `HTTP_PROXY` or `HTTPS_PROXY` and each request goes through urllib instead, without the connection reuse.
+
 ## Page features
 
 The page is a single HTML file with d3 inlined, so it works offline.
