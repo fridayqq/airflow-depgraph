@@ -6,7 +6,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 
-from .client import AirflowClient
+from .client import AirflowClient, ApiError
 from .presets import Settings
 
 _EMPTY_STATES = {"skipped", "removed", None}
@@ -73,14 +73,21 @@ def fetch_status(client: AirflowClient, dag_ids: list[str], s: Settings, *,
     """catalog: DAG facts already listed (snapshot `catalog`); saves one GET per DAG."""
     result: dict[str, dict] = {}
     total = len(dag_ids)
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
         futures = {pool.submit(_one, client, d, s, with_tasks, catalog): d for d in dag_ids}
         for done, fut in enumerate(as_completed(futures), 1):
             dag_id = futures[fut]
             try:
                 result[dag_id] = fut.result()
+            except ApiError as exc:
+                if exc.status == 401:   # expired token: every other call would fail too
+                    raise
+                result[dag_id] = {"error": str(exc)}
             except Exception as exc:  # isolate per-DAG failures
                 result[dag_id] = {"error": str(exc)}
             if progress:
                 progress(f"{done}/{total} {dag_id}")
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
     return result

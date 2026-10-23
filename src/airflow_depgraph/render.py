@@ -112,6 +112,7 @@ def build_view(snap: Snapshot, s: Settings, status_override: dict | None = None)
         "inferred": None if snap.inferred is None else sum(
             1 for n in nodes if n.get("inferred") and n["kind"] != "guard"),
         "guards": sum(1 for n in nodes if n.get("kind") == "guard"),
+        "status_errors": sum(1 for v in dags.values() if isinstance(v, dict) and "error" in v),
         "snapshot": snap.fetched_at,
         "source": snap.source,
     }
@@ -127,6 +128,9 @@ def _stats_line(st: dict, inferred_note: str | None = None, inferred_updated: st
         inferred_note = f"sensor links: {st['inferred']}"
         if inferred_updated:
             inferred_note += f", updated {inferred_updated}"
+    status_note = []
+    if st.get("status_errors"):
+        status_note = [f"status unavailable for {st['status_errors']} DAGs"]
     return " · ".join(
         [
             _plural(st["dags"], "DAG", "DAGs"),
@@ -136,7 +140,7 @@ def _stats_line(st: dict, inferred_note: str | None = None, inferred_updated: st
             _plural(st["edges"], "edge", "edges"),
             f"failing now: {st['failing']}",
             f"snapshot {st['snapshot']}",
-        ] + ([inferred_note] if inferred_note else [])
+        ] + ([inferred_note] if inferred_note else []) + status_note
     )
 
 

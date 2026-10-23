@@ -127,3 +127,18 @@ def test_fetch_status_reuses_catalog():
     out = fetch_status(NoDag(), ["dag_a"], Settings(), with_tasks=False, catalog=cat)
     assert out["dag_a"]["is_paused"] is True and out["dag_a"]["schedule"] == "Daily"
     assert out["dag_a"]["owners"] == ["me"] and out["dag_a"]["last_run"]["state"] == "success"
+
+
+class _ExpiredToken(FakeClient):
+    def dag_runs(self, dag_id, limit):
+        if dag_id == "dag_401":
+            raise ApiError("401 on /dagRuns: Unauthorized", 401, "/dagRuns")
+        return super().dag_runs(dag_id, limit)
+
+
+def test_fetch_status_stops_on_401():
+    import pytest
+    with pytest.raises(ApiError) as ei:
+        fetch_status(_ExpiredToken(), ["dag_a", "dag_401", "dag_b"], Settings(),
+                     with_tasks=False, workers=1)
+    assert ei.value.status == 401

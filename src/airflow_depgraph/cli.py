@@ -89,8 +89,13 @@ def _fetch_dags(client: AirflowClient, snap: Snapshot, s: Settings) -> dict | No
     if s.with_status:
         def progress(msg: str) -> None:
             print(f"fetching status {msg.split()[0]}", file=sys.stderr)
-        return fetch_status(client, ids, s, with_tasks=s.with_tasks, progress=progress,
-                            catalog=snap.catalog)
+        result = fetch_status(client, ids, s, with_tasks=s.with_tasks, progress=progress,
+                              catalog=snap.catalog)
+        errors = [result[d]["error"] for d in ids if "error" in result.get(d, {})]
+        if errors:
+            print(f"warning: status unavailable for {len(errors)} of {len(ids)} DAGs "
+                  f"(first error: {errors[0]})", file=sys.stderr)
+        return result
     if s.with_tasks:
         with ThreadPoolExecutor(max_workers=8) as pool:
             tasks = pool.map(lambda d: [t["task_id"] for t in client.tasks(d)], ids)

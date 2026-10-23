@@ -363,3 +363,18 @@ def test_live_query_infers_when_setting_is_on(live, monkeypatch, capsys):
     assert cli.main(["downstream", "x", "--url", URL]) == 0
     captured = capsys.readouterr()
     assert "via sensor:wait_x (inferred)" in captured.out and "inferring sensors 1/1" in captured.err
+
+
+def test_fetch_warns_on_stderr_when_status_unavailable(tmp_path, live, monkeypatch, capsys):
+    from airflow_depgraph.client import ApiError
+
+    def dag_runs(self, dag_id, limit):
+        if dag_id == "y":
+            raise ApiError("500 on /dagRuns", 500, "/dagRuns")
+        return []
+
+    monkeypatch.setattr(FakeClient, "dag_runs", dag_runs)
+    assert cli.main(["fetch", "--url", URL, "-o", str(tmp_path / "s.json"), "--with-status"]) == 0
+    captured = capsys.readouterr()
+    assert "warning: status unavailable for 1 of 2 DAGs (first error: 500 on /dagRuns)" in captured.err
+    assert "warning" not in captured.out

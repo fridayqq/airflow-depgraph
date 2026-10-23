@@ -214,3 +214,15 @@ def test_view_drops_inferred_sensors_whose_targets_are_all_stale(inferred_snapsh
     snap = dataclasses.replace(inferred_snapshot, inferred=inferred_snapshot.inferred + extra)
     ids = set(_by_id(build_view(snap, Settings())))
     assert "sensor-inferred:dag_a:w" not in ids and "sensor-inferred:dag_b:w" in ids
+
+
+def test_view_counts_status_errors_in_header(small_snapshot):
+    import dataclasses
+    from airflow_depgraph.render import _stats_line
+    snap = dataclasses.replace(small_snapshot, dags={"dag_a": {"error": "500 on /dags"}})
+    stats = build_view(snap, Settings())["stats"]
+    assert stats["status_errors"] == 1
+    assert "status unavailable for 1 DAGs" in _stats_line(stats)
+    clean = build_view(small_snapshot, Settings())["stats"]
+    assert clean["status_errors"] == 0
+    assert "status unavailable" not in _stats_line(clean)
