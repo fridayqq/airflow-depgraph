@@ -8,6 +8,7 @@ import logging
 import threading
 import time
 from collections import OrderedDict
+from datetime import datetime, timezone
 from typing import Callable, Mapping
 from urllib.parse import urlparse
 
@@ -15,6 +16,7 @@ from . import snapshot as snapmod
 from .client import AirflowClient, ApiError
 from .presets import Settings
 from .render import render
+from .sensors import fetch_tasks, infer_sensor_edges
 from .status import fetch_status
 
 TOKEN_COOKIE = "_token"
@@ -22,6 +24,8 @@ CACHE_SECONDS = 300
 CACHE_ENTRIES = 64
 MAX_BUILDS = 3
 CLIENT_TIMEOUT = 10
+INFER_WORKERS = 4
+INFER_POLL_SECONDS = 30
 log = logging.getLogger(__name__)
 
 
@@ -60,6 +64,86 @@ def loopback_url(base_url: str | None, port: int | str, override: str | None = N
     return f"http://127.0.0.1:{port}{base_path(base_url)}"
 
 
+class InferenceCache:
+    """Latest inferred sensor links, refreshed in a daemon thread with a recent user's token.
+
+    The thread starts on the first `offer()`. Each cycle uses the most recent usable token seen;
+    without one the cycle is skipped. Tokens are kept in memory only and never logged.
+    """
+
+    def __init__(self, api_url: str, interval_seconds: float, *,
+                 client_factory: Callable[..., AirflowClient] = AirflowClient,
+                 builds: threading.Semaphore | None = None,
+                 wall_clock: Callable[[], float] = time.time,
+                 start_thread: bool = True):
+        self.api_url, self.interval = api_url, interval_seconds
+        self._client_factory, self._wall = client_factory, wall_clock
+        self._builds = builds or threading.BoundedSemaphore(1)
+        self._start_thread = start_thread
+        self._lock = threading.Lock()
+        self._token: str | None = None
+        self._result: tuple[list[dict], float] | None = None
+        self._attempted: float | None = None
+        self._thread: threading.Thread | None = None
+
+    def offer(self, token: str) -> None:
+        """Remember the caller's token for the next cycle and start the thread if needed."""
+        if not token_usable(token, self._wall()):
+            return
+        with self._lock:
+            self._token = token
+            if self._start_thread and self._thread is None:
+                self._thread = threading.Thread(target=self._loop, name="depgraph-infer",
+                                                daemon=True)
+                self._thread.start()
+
+    def current(self) -> tuple[list[dict], float] | None:
+        """(inferred list, wall-clock time of the refresh) or None before the first refresh."""
+        with self._lock:
+            return self._result
+
+    def due(self) -> bool:
+        with self._lock:
+            return self._attempted is None or self._wall() - self._attempted >= self.interval
+
+    def _loop(self) -> None:
+        while True:
+            if self.due():
+                self.refresh()
+            time.sleep(INFER_POLL_SECONDS)
+
+    def refresh(self) -> bool:
+        """One cycle; False when it was skipped (no usable token, retried soon) or failed."""
+        with self._lock:
+            token = self._token
+            if not token or not token_usable(token, self._wall()):
+                return False
+            self._attempted = self._wall()
+        try:
+            with self._builds:
+                inferred = self._infer(token)
+        except ApiError as exc:
+            if exc.status in (401, 403):
+                with self._lock:
+                    if self._token == token:
+                        self._token = None
+            log.warning("airflow-depgraph: sensor inference skipped: %s", exc)
+            return False
+        except Exception:  # noqa: BLE001 - the thread must survive any one bad cycle
+            log.exception("airflow-depgraph: sensor inference failed")
+            return False
+        with self._lock:
+            self._result = (inferred, self._wall())
+        return True
+
+    def _infer(self, token: str) -> list[dict]:
+        client = self._client_factory(self.api_url, token=token, timeout=CLIENT_TIMEOUT)
+        catalog = snapmod.build_catalog(client.list_dags())
+        ids = sorted(d for d, c in catalog.items() if not c.get("is_stale"))
+        tasks = fetch_tasks(client, ids, workers=INFER_WORKERS)
+        return infer_sensor_edges(client, ids, tasks, workers=INFER_WORKERS)
+
+
 class PageBuilder:
     """Builds the page with the caller's token; pages are cached per token (bounded LRU, TTL)."""
 
@@ -74,6 +158,11 @@ class PageBuilder:
         self._lock = threading.Lock()
         self._key_locks: dict[tuple[str, bool], threading.Lock] = {}
         self._builds = threading.BoundedSemaphore(MAX_BUILDS)
+        self.inference: InferenceCache | None = None
+        if settings.infer_sensors:
+            self.inference = InferenceCache(
+                api_url, max(1, settings.infer_interval_minutes) * 60, builds=self._builds,
+                client_factory=lambda *a, **kw: self._client_factory(*a, **kw))
 
     def _hit(self, key: tuple[str, bool]) -> str | None:
         with self._lock:
@@ -91,6 +180,8 @@ class PageBuilder:
                 self._cache.popitem(last=False)
 
     def page(self, token: str, public_url: str | None, with_status: bool) -> str:
+        if self.inference is not None:
+            self.inference.offer(token)
         key = (hashlib.sha256(token.encode()).hexdigest(), with_status)
         if (html := self._hit(key)) is not None:
             return html
@@ -117,7 +208,17 @@ class PageBuilder:
             snap.catalog = snapmod.build_catalog(client.list_dags())
         except ApiError as exc:
             log.warning("airflow-depgraph: cannot list DAGs, page filters degraded: %s", exc)
+        note = updated = None
+        if self.inference is not None:
+            cached = self.inference.current()
+            if cached is None:
+                note = "sensor links: first refresh running"
+            else:
+                # What this viewer may see: their own /ui/dependencies DAGs plus their catalog.
+                visible = {n["id"][4:] for n in nodes if n["type"] == "dag"} | set(snap.catalog or {})
+                snap.inferred = snapmod.visible_inferred(cached[0], visible)
+                updated = datetime.fromtimestamp(cached[1], timezone.utc).strftime("%H:%M UTC")
         if with_status:
             snap.dags = fetch_status(client, snap.graph.dag_ids, self.settings, with_tasks=False,
                                      catalog=snap.catalog)
-        return render(snap, self.settings)
+        return render(snap, self.settings, inferred_note=note, inferred_updated=updated)

@@ -120,3 +120,15 @@ def test_list_dags_paginates_until_short_page():
     assert len(dags) == 103 and dags[-1]["dag_id"] == "d102"
     assert [s[0] for s in seen] == ["/api/v2/dags"] * 2
     assert [(s[1], s[2]) for s in seen] == [(100, 0), (100, 100)]
+
+
+def test_sensor_endpoints_quote_ids_and_read_content():
+    base = "/api/v2/dags/my%20dag/dagRuns/r%2B1/taskInstances/grp.wait"
+    op = fake_opener({base: {"rendered_fields": {"op_kwargs": {}}},
+                      "/api/v2/dagSources/my%20dag": {"content": "dag source"},
+                      base + "/logs/2": {"content": [{"event": "DAG orders_dag done"}]}})
+    c = AirflowClient(URL, token="t", opener=op)
+    assert c.task_instance("my dag", "r+1", "grp.wait") == {"rendered_fields": {"op_kwargs": {}}}
+    assert c.dag_source("my dag") == "dag source"
+    assert "orders_dag" in c.task_log("my dag", "r+1", "grp.wait", 2)
+    assert op.calls[2]["url"].endswith("/logs/2?full_content=true")

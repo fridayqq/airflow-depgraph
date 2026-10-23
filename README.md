@@ -14,7 +14,7 @@ Things to know before you use it:
 
 ![Graph model: DAGs linked through assets, triggers and sensors; link nodes do not count as hops and are reported as "via"](docs/images/graph-model.png)
 
-Only explicit Airflow dependencies are visible: asset events, `TriggerDagRunOperator` triggers and sensors. `downstream`/`upstream` count hops between DAGs; the asset, trigger or sensor that joins two DAGs is reported as `via`. A DAG reachable by several paths is listed once, at its shortest hop count. Table-level coupling without an asset is invisible here.
+Only explicit Airflow dependencies are visible: asset events, `TriggerDagRunOperator` triggers and `ExternalTaskSensor`s. Other sensors that wait on a DAG can be added with `--infer-sensors` (see [Sensor dependencies (inferred)](#sensor-dependencies-inferred)). `downstream`/`upstream` count hops between DAGs; the asset, trigger or sensor that joins two DAGs is reported as `via`. A DAG reachable by several paths is listed once, at its shortest hop count. Table-level coupling without an asset is invisible here.
 
 ## Install
 
@@ -47,6 +47,8 @@ Tested on Airflow 3.1.5 and 3.3.2, at the root and under a sub-path such as `/ai
   with `?status=1`, or set `AIRFLOW_DEPGRAPH_WITH_STATUS=true`. The rendered page is kept in
   memory per session token for five minutes (at most 64 pages); permission changes show up
   after that.
+- **Inferred sensor links.** Off by default. With `AIRFLOW_DEPGRAPH_INFER_SENSORS=true` a
+  background refresh adds them; see [Sensor dependencies (inferred)](#sensor-dependencies-inferred).
 - **Settings.** The same `AIRFLOW_DEPGRAPH_*` variables as the CLI (`..._HIGHLIGHT`,
   `..._ASSET_LABEL_STRIP_PREFIX`, `..._TITLE`, `..._TESTS_TASK_REGEX`), or a preset named in
   `AIRFLOW_DEPGRAPH_PRESET`, set on the api-server.
@@ -154,6 +156,7 @@ Other options worth knowing:
 - `--title` sets the page title and `--highlight REGEX` highlights DAG ids that match.
 - `--tag NAME` (on `fetch`, `render` and `graph`, repeatable) sets the page's default tag filter. It replaces the `tags` of the preset or the environment.
 - `presets --preset NAME` prints the resolved settings of a preset (never the token).
+- `--infer-sensors` (on `fetch` and `graph`) adds DAG dependencies found in Python and custom sensors. `--no-inferred` and `--include-guards` (on `downstream` and `upstream`) control how they are followed.
 
 ## Credentials
 
@@ -235,9 +238,54 @@ The page is a single HTML file with d3 inlined, so it works offline.
 - **Search.** Type a DAG name to focus it. `+dag` adds everything upstream, `dag+` everything downstream, and `2+dag+3` limits that to 2 levels up and 3 down.
 - **Toggles.** Hide assets, show only failing DAGs, and highlight the DAGs matched by the preset `highlight` regex.
 - **Filters.** Three filters are on by default. *only linked DAGs* hides DAGs that have no asset, trigger or sensor link to another DAG; switched off, those DAGs appear in a grid below the graph. *only active DAGs* hides paused DAGs. *only tags: …* keeps the DAGs that carry any of the configured `tags`; it is shown only when tags are configured. *+ connected DAGs* (off by default) also keeps DAGs of other tags that are one edge or one asset, trigger or sensor away from a kept DAG. Assets, triggers and sensors stay only while they still join kept nodes. *only failing* applies after these filters. The header shows how many DAGs are on screen out of the total. These filters need the DAG catalog (see the snapshot format); stale DAGs are never shown.
-- **Hash flags.** The page writes its state to the URL fragment as you type or toggle, so a view can be shared: `#q=<text>,onlyFail,hideAssets,hl,allLinks,paused,allTags,conn`. Filters that are on by default appear as their negation: `allLinks` shows unlinked DAGs, `paused` shows paused DAGs, `allTags` switches the tag filter off, and `conn` switches on *+ connected DAGs*. The search text is URL-encoded. Opening a page with such a fragment restores the view.
+- **Hash flags.** The page writes its state to the URL fragment as you type or toggle, so a view can be shared: `#q=<text>,onlyFail,hideAssets,hl,allLinks,paused,allTags,conn,guards`. Filters that are on by default appear as their negation: `allLinks` shows unlinked DAGs, `paused` shows paused DAGs, `allTags` switches the tag filter off, `conn` switches on *+ connected DAGs*, and `guards` shows inferred deploy guards. The search text is URL-encoded. Opening a page with such a fragment restores the view.
 
 The text queries `downstream` and `upstream` are not filtered by tags or paused state.
+
+## Sensor dependencies (inferred)
+
+Airflow's `/ui/dependencies` only knows `ExternalTaskSensor`. Many DAGs wait on other DAGs with a
+`PythonSensor`, a `@task.sensor` or a custom sensor, and those links are missing from the graph.
+`fetch --infer-sensors` (also `graph`, or `infer_sensors = true` in a preset) looks for them.
+
+- **What is checked.** Every task whose operator name contains "sensor", except
+  `ExternalTaskSensor` (already in the graph) and sensors that wait on time, files or BI jobs:
+  `TimeSensor`, `DateTimeSensor`, `TimeDeltaSensor`, `S3KeySensor`, `TableauJobStatusSensor`.
+- **Three sources, first hit wins.**
+  1. *Rendered fields* of the newest task instance among the last 5 runs. Every string equal to
+     another DAG id is a target. Keys such as `external_task_id` or `task_ids` give the target tasks.
+  2. *DAG source* (`GET /api/v2/dagSources/{dag_id}`): quoted string literals equal to another
+     DAG id. This catches `@task.sensor` functions whose arguments are not templated.
+  3. *Task log* of that task instance: words equal to another DAG id, for example
+     `DAG orders_dag has successfully executed.`
+  Only ids of DAGs that exist (in the catalog) count, and never the sensor's own DAG.
+- **Data wait or deploy guard.** A sensor whose `states` is exactly `["running"]` waits for the
+  other DAG *not* to run. It is a deploy guard, not a data dependency. Guards are drawn dashed and
+  grey, hidden until *show deploy guards* is on (hash flag `guards`), and `downstream`/`upstream`
+  follow them only with `--include-guards`. Every other match is a data dependency.
+- **On the page.** An inferred link is a dashed sensor node between the two DAGs, with dashed
+  edges. Its side panel says where it was found. The tag, active and linked filters treat it like
+  any other sensor. The header shows `sensor links: N`.
+- **In the text queries.** `via` reads `sensor:<task> (inferred)`. `--no-inferred` ignores all
+  inferred links.
+- **Cost.** About 10 to 15 API calls per sensor: one task list per DAG, the recent runs, up to 5
+  task instances, the DAG source (once per DAG) and one log. A few hundred sensors take minutes.
+- **Limits.** Matching is by DAG id text. A DAG id built at runtime, or a sensor that has never
+  run and does not name its target literally, is not found. A sensor that names several DAGs links
+  to all of them.
+
+**In the Airflow plugin.** The page never infers while you wait. Set
+`AIRFLOW_DEPGRAPH_INFER_SENSORS=true` on the api-server, and a background thread starts on the
+first page request. It refreshes every `AIRFLOW_DEPGRAPH_INFER_INTERVAL_MINUTES` (default 30) and
+shares the page's limit of concurrent builds. Each refresh uses the session token of the most
+recent visitor with a valid session. Tokens are kept in memory only and never logged. Without a
+valid token the refresh waits for the next visitor. The header shows
+`sensor links: N, updated HH:MM UTC`, or that the first refresh is still running.
+
+The links are computed with the permissions of a recently active user. On Airflow before 3.1.8
+every user sees every DAG anyway. From 3.1.8 on, each viewer still only gets the DAGs of their
+own `/ui/dependencies` and DAG catalog, and inferred links that touch any other DAG are dropped
+from their page.
 
 ## How failing is decided
 
@@ -278,11 +326,15 @@ Snapshots are JSON, format 1:
   "catalog": {
     "my_dag": {"tags": ["team-a"], "is_paused": false, "is_stale": false, "schedule": "Asset", "owners": ["alice"]},
     "lonely_dag": {"tags": [], "is_paused": true, "is_stale": false, "schedule": "0 5 * * *", "owners": ["bob"]}
-  }
+  },
+  "inferred": [
+    {"dag": "lonely_dag", "task": "wait_for_my_dag", "operator": "PythonSensor", "source": "rendered",
+     "targets": ["my_dag"], "target_tasks": ["load"], "kind": "data"}
+  ]
 }
 ```
 
-`dags` is optional. `catalog` is optional too: `fetch`, `graph` and the Airflow plugin fill it from one paginated `GET /api/v2/dags`, and the page filters need it. Without it (older snapshots, or a user who may not list DAGs) the page shows only linked DAGs, takes paused state from `dags`, and hides the tag filter. Catalog DAGs that are not in the graph become unlinked DAG nodes, and stale DAGs are dropped from the page. `last_run` is present with `--with-status` and `tasks` with `--with-tasks`. The `last_run` object is abbreviated here. Edges whose endpoints are missing from `nodes` are dropped on load.
+`dags` is optional. `catalog` is optional too: `fetch`, `graph` and the Airflow plugin fill it from one paginated `GET /api/v2/dags`, and the page filters need it. Without it (older snapshots, or a user who may not list DAGs) the page shows only linked DAGs, takes paused state from `dags`, and hides the tag filter. Catalog DAGs that are not in the graph become unlinked DAG nodes, and stale DAGs are dropped from the page. `last_run` is present with `--with-status` and `tasks` with `--with-tasks`. `inferred` is present with `--infer-sensors`: one entry per checked sensor, `source` is `rendered`, `source`, `logs` or `none` (nothing found), `kind` is `data` or `guard`. The `last_run` object is abbreviated here. Edges whose endpoints are missing from `nodes` are dropped on load.
 
 ## Development
 

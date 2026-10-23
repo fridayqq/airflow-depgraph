@@ -120,3 +120,49 @@ def test_build_catalog_normalises_tags_and_schedule():
     assert cat["a"] == {"tags": ["team-a", "analytics"], "is_paused": True, "is_stale": False,
                         "schedule": "0 5 * * *", "owners": ["o"]}
     assert cat["b"] == {"tags": [], "is_paused": False, "is_stale": False, "schedule": "Daily", "owners": []}
+
+
+def test_with_inferred_adds_link_nodes_and_skips_guards_and_unresolved(inferred_snapshot):
+    from airflow_depgraph.snapshot import with_inferred
+    s = inferred_snapshot
+    nodes, edges = with_inferred(s.nodes, s.edges, s.inferred)
+    ids = {n["id"] for n in nodes}
+    assert {"sensor-inferred:dag_x_cron:wait_i", "sensor-inferred:dag_k_report:wait_l",
+            "dag:dag_x_cron"} <= ids
+    assert "sensor-inferred:dag_y_cron:guard_a" not in ids and "dag:dag_y_cron" not in ids
+    assert not any(i.startswith("sensor-inferred:dag_b:") for i in ids)
+    assert {"source_id": "dag:dag_i", "target_id": "sensor-inferred:dag_x_cron:wait_i"} in edges
+    assert {"source_id": "sensor-inferred:dag_x_cron:wait_i", "target_id": "dag:dag_x_cron"} in edges
+    link = next(n for n in nodes if n["id"] == "sensor-inferred:dag_x_cron:wait_i")
+    assert link == {"id": "sensor-inferred:dag_x_cron:wait_i", "label": "wait_i", "type": "sensor",
+                    "inferred": "rendered", "kind": "data"}
+    g_nodes, _ = with_inferred(s.nodes, s.edges, s.inferred, include_guards=True)
+    assert any(n["id"] == "sensor-inferred:dag_y_cron:guard_a" and n["kind"] == "guard" for n in g_nodes)
+    assert len(s.nodes) == 22                       # inputs untouched
+
+
+def test_snapshot_graph_traverses_inferred_edges(inferred_snapshot, small_snapshot):
+    assert reach_dags(inferred_snapshot.graph, "dag:dag_a", "downstream") == 10   # + dag_x_cron
+    assert reach_dags(small_snapshot.graph, "dag:dag_a", "downstream") == 9
+    assert reach_dags(inferred_snapshot.graph_for(inferred=False), "dag:dag_a", "downstream") == 9
+    assert reach_dags(inferred_snapshot.graph_for(guards=True), "dag:dag_a", "downstream") == 11
+
+
+def test_inferred_roundtrip_and_validation(tmp_path, inferred_snapshot):
+    p = tmp_path / "s.json"
+    dump(inferred_snapshot, p)
+    assert load(p).inferred == inferred_snapshot.inferred
+    data = json.loads(p.read_text())
+    data["inferred"] = {"x": 1}
+    p.write_text(json.dumps(data))
+    with pytest.raises(SnapshotError, match="inferred"):
+        load(p)
+
+
+def test_visible_inferred_drops_dags_the_viewer_cannot_see():
+    from airflow_depgraph.snapshot import visible_inferred
+    inferred = [{"dag": "b", "task": "t", "source": "rendered", "targets": ["a", "hidden"]},
+                {"dag": "hidden", "task": "t", "source": "source", "targets": ["a"]},
+                {"dag": "b", "task": "u", "source": "logs", "targets": ["hidden"]}]
+    assert visible_inferred(inferred, {"a", "b"}) == [
+        {"dag": "b", "task": "t", "source": "rendered", "targets": ["a"]}]

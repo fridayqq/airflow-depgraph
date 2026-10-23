@@ -19,6 +19,7 @@ from airflow_depgraph.client import AirflowClient, ApiError
 from airflow_depgraph.graph import Hit, walk
 from airflow_depgraph.presets import PresetError, Settings, list_presets, resolve
 from airflow_depgraph.render import render
+from airflow_depgraph.sensors import fetch_tasks, infer_sensor_edges
 from airflow_depgraph.snapshot import Snapshot, SnapshotError
 from airflow_depgraph.status import fetch_status
 
@@ -35,7 +36,8 @@ class CliError(Exception):
 
 def _settings(args: argparse.Namespace) -> Settings:
     cli = {k: getattr(args, k, None)
-           for k in ("url", "user", "token", "with_status", "with_tasks", "title", "highlight")}
+           for k in ("url", "user", "token", "with_status", "with_tasks", "title", "highlight",
+                     "infer_sensors")}
     if getattr(args, "tags", None):
         cli["tags"] = tuple(args.tags)
     return resolve(cli, os.environ, args.preset)
@@ -68,12 +70,14 @@ def _live_snapshot(client: AirflowClient, s: Settings, node_id: str | None) -> S
     return snap
 
 
-def _walk(snap: Snapshot, dag: str, direction: str, depth: int) -> list[Hit]:
+def _walk(snap: Snapshot, dag: str, direction: str, depth: int,
+          inferred: bool = True, guards: bool = False) -> list[Hit]:
+    g = snap.graph if inferred and not guards else snap.graph_for(inferred, guards)
     try:
-        return walk(snap.graph, dag, direction, depth)
+        return walk(g, dag, direction, depth)
     except KeyError:
         raise CliError(f"dag '{dag}' is not in the dependency graph "
-                       f"({len(snap.graph.dag_ids)} DAGs known)") from None
+                       f"({len(g.dag_ids)} DAGs known)") from None
 
 
 def _fetch_dags(client: AirflowClient, snap: Snapshot, s: Settings) -> dict | None:
@@ -90,9 +94,25 @@ def _fetch_dags(client: AirflowClient, snap: Snapshot, s: Settings) -> dict | No
     return None
 
 
+def _infer(client: AirflowClient, snap: Snapshot) -> list[dict]:
+    """Sensors of every catalog DAG (graph DAGs without a catalog) that wait on another DAG."""
+    if snap.catalog is not None:
+        ids = sorted(d for d, c in snap.catalog.items() if not c.get("is_stale"))
+    else:
+        ids = snap.graph_for(inferred=False).dag_ids
+    print(f"inferring sensors: reading the tasks of {len(ids)} DAGs", file=sys.stderr)
+    tasks = fetch_tasks(client, ids)
+
+    def progress(msg: str) -> None:
+        print(f"inferring sensors {msg.split()[0]}", file=sys.stderr)
+    return infer_sensor_edges(client, ids, tasks, progress=progress)
+
+
 def _fetch_snapshot(args: argparse.Namespace, s: Settings) -> Snapshot:
     client = _client(s, args)
     snap = _live_snapshot(client, s, args.node_id)
+    if s.infer_sensors:
+        snap = dataclasses.replace(snap, inferred=_infer(client, snap))
     snap.dags = _fetch_dags(client, snap, s)
     return snap
 
@@ -220,7 +240,8 @@ def _query(args: argparse.Namespace, direction: str) -> int:
     else:
         client = _client(s, args)
         snap = _live_snapshot(client, s, None)
-    hits = _walk(snap, args.dag, direction, args.depth)
+    hits = _walk(snap, args.dag, direction, args.depth,
+                 inferred=not args.no_inferred, guards=args.include_guards)
     info = {h.dag_id: _dag_info(client, snap, h.dag_id) for h in hits}
     if regex:
         hits = _match_tasks(client, snap, hits, regex, info)
@@ -285,6 +306,9 @@ def _parser() -> argparse.ArgumentParser:
                             help="also fetch the latest run status of every DAG")
     fetch_opts.add_argument("--with-tasks", action="store_true", default=None,
                             help="also fetch the task ids of every DAG")
+    fetch_opts.add_argument("--infer-sensors", action="store_true", default=None,
+                            help="also infer DAG dependencies from Python and custom sensors "
+                                 "(about 10-15 API calls per sensor)")
     fetch_opts.add_argument("--node-id", help="fetch only the subgraph around this node id, e.g. dag:my_dag")
 
     render_opts = argparse.ArgumentParser(add_help=False)
@@ -323,6 +347,10 @@ def _parser() -> argparse.ArgumentParser:
         q.add_argument("--json", action="store_true", help="print machine-readable JSON")
         q.add_argument("--tasks-matching", nargs="?", const=True, metavar="REGEX",
                        help="keep DAGs having a task matching REGEX (default: preset task_query_regex)")
+        q.add_argument("--no-inferred", action="store_true",
+                       help="ignore sensor dependencies inferred by fetch --infer-sensors")
+        q.add_argument("--include-guards", action="store_true",
+                       help="also follow inferred deploy guards (sensors waiting for a DAG not to run)")
         q.set_defaults(func=lambda a, d=name: _query(a, d))
 
     t = sub.add_parser("tasks", parents=[common], help="list the tasks of a DAG")

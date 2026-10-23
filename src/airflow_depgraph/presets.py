@@ -35,6 +35,8 @@ class Settings:
     task_query_regex: str | None = None
     status_runs_lookback: int = 5
     tags: tuple[str, ...] = ()
+    infer_sensors: bool = False
+    infer_interval_minutes: int = 30
     preset_name: str | None = None
 
 

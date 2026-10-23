@@ -47,3 +47,8 @@ name = "example"
 
 # Default page filter: only DAGs with any of these tags (the page can switch it off).
 # tags = ["team-a"]
+# Infer DAG dependencies from Python and custom sensors (fetch/graph; the plugin refreshes them
+# in the background). Costs about 10-15 API calls per sensor.
+# infer_sensors = false
+# Plugin only: minutes between background refreshes of the inferred sensor links.
+# infer_interval_minutes = 30

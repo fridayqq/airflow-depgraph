@@ -176,3 +176,24 @@ def test_render_meta_has_tags(small_snapshot):
     html = render(small_snapshot, Settings(tags=("reporting", "team-a")))
     assert '"airflow_version": "3.3.2", "tags": ["reporting", "team-a"]' in html
     assert '"airflow_version": "3.3.2", "tags": []' in render(small_snapshot, Settings())
+
+
+def test_view_inferred_nodes_flags_and_stats(inferred_snapshot):
+    view = build_view(inferred_snapshot, Settings())
+    nodes = _by_id(view)
+    assert nodes["sensor-inferred:dag_x_cron:wait_i"]["inferred"] == "rendered"
+    guard = nodes["sensor-inferred:dag_y_cron:guard_a"]
+    assert guard["kind"] == "guard" and guard["down"] == 0
+    assert nodes["dag:dag_a"]["down"] == 10              # the guard does not count as reach
+    assert "unlinked" not in nodes["dag:dag_x_cron"] and "guard_only" not in nodes["dag:dag_x_cron"]
+    assert nodes["dag:dag_y_cron"]["guard_only"] is True and "guard_only" not in nodes["dag:dag_a"]
+    assert view["stats"]["inferred"] == 2 and view["stats"]["guards"] == 1
+    assert view["stats"]["unlinked"] == 0
+    assert {"s": "dag:dag_a", "t": "sensor-inferred:dag_y_cron:guard_a"} in view["edges"]
+
+
+def test_render_header_counts_sensor_links(inferred_snapshot, small_snapshot):
+    assert "sensor links: 2" in render(inferred_snapshot, Settings())
+    assert "sensor links: 2, updated 10:30 UTC" in render(inferred_snapshot, Settings(),
+                                                          inferred_updated="10:30 UTC")
+    assert "sensor links:" not in render(small_snapshot, Settings())

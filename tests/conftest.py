@@ -56,3 +56,23 @@ def fake_opener(routes):
 
     opener.calls = calls
     return opener
+
+
+# Inferred sensors on top of the small fixture: a data wait (rendered), a DAG-source wait and a
+# deploy guard; dag_x_cron and dag_y_cron are catalog-only DAGs in the fixture.
+INFERRED = [
+    {"dag": "dag_x_cron", "task": "wait_i", "operator": "PythonSensor", "source": "rendered",
+     "targets": ["dag_i"], "target_tasks": ["group.done"], "kind": "data"},
+    {"dag": "dag_k_report", "task": "wait_l", "operator": "_DecoratedSensorOperator",
+     "source": "source", "targets": ["dag_l_report"], "target_tasks": [], "kind": "data"},
+    {"dag": "dag_y_cron", "task": "guard_a", "operator": "PythonSensor", "source": "rendered",
+     "targets": ["dag_a"], "target_tasks": [], "kind": "guard"},
+    {"dag": "dag_b", "task": "unresolved", "operator": "PythonSensor", "source": "none",
+     "targets": [], "target_tasks": [], "kind": "data"},
+]
+
+
+@pytest.fixture
+def inferred_snapshot(small_snapshot):
+    import dataclasses
+    return dataclasses.replace(small_snapshot, inferred=[dict(e) for e in INFERRED])

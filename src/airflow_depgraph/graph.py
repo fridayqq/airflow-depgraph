@@ -12,6 +12,7 @@ class Node:
     id: str
     label: str
     type: str
+    inferred: bool = False
 
 
 @dataclass(frozen=True)
@@ -32,7 +33,7 @@ class Graph:
     def from_payload(cls, nodes: list[dict], edges: list[dict]) -> Graph:
         g = cls()
         for n in nodes:
-            node = Node(id=n["id"], label=n["label"], type=n["type"])
+            node = Node(id=n["id"], label=n["label"], type=n["type"], inferred=bool(n.get("inferred")))
             g.nodes[node.id] = node
             g.out.setdefault(node.id, [])
             g.inc.setdefault(node.id, [])
@@ -54,7 +55,7 @@ def _neighbours(g: Graph, node_id: str, direction: Direction) -> list[str]:
 
 def _link_label(g: Graph, node_id: str) -> str:
     node = g.nodes[node_id]
-    return f"{node.type}:{node.label}"
+    return f"{node.type}:{node.label}" + (" (inferred)" if node.inferred else "")
 
 
 def walk(g: Graph, start: str, direction: Direction, depth: int = 5) -> list[Hit]:

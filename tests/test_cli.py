@@ -284,3 +284,54 @@ def test_presets_prints_tags(capsys, monkeypatch, tmp_path):
     monkeypatch.setenv("AIRFLOW_DEPGRAPH_PRESETS", str(d))
     assert cli.main(["presets", "--preset", "mine"]) == 0
     assert "tags = a, b" in capsys.readouterr().out
+
+
+@pytest.fixture
+def inferred_file(tmp_path, inferred_snapshot):
+    from airflow_depgraph.snapshot import dump
+    p = tmp_path / "inf.json"
+    dump(inferred_snapshot, p)
+    return str(p)
+
+
+def test_downstream_follows_inferred_sensor(inferred_file, capsys):
+    assert cli.main(["downstream", "dag_i", inferred_file, "--json"]) == 0
+    dags = json.loads(capsys.readouterr().out)["dags"]
+    assert dags == [{"dag_id": "dag_x_cron", "hops": 1, "via": "sensor:wait_i (inferred)",
+                     "is_paused": None, "schedule": None, "owners": None}]
+
+
+def test_no_inferred_flag_ignores_them(inferred_file, capsys):
+    assert cli.main(["downstream", "dag_i", inferred_file, "--no-inferred"]) == 0
+    assert "dag_x_cron" not in capsys.readouterr().out
+
+
+def test_guards_need_include_guards(inferred_file, capsys):
+    assert cli.main(["upstream", "dag_y_cron", inferred_file]) == 1
+    capsys.readouterr()
+    assert cli.main(["upstream", "dag_y_cron", inferred_file, "--include-guards"]) == 0
+    assert "via sensor:guard_a (inferred)" in capsys.readouterr().out
+
+
+def test_fetch_infer_sensors_fills_inferred(tmp_path, live, monkeypatch, capsys):
+    def tasks(self, dag_id):
+        return [{"task_id": "wait_x", "operator_name": "PythonSensor"}] if dag_id == "z" else []
+    monkeypatch.setattr(FakeClient, "tasks", tasks)
+    monkeypatch.setattr(FakeClient, "dag_runs", lambda self, d, limit: [{"dag_run_id": "r1"}])
+    monkeypatch.setattr(FakeClient, "task_instance", lambda self, d, r, t: {
+        "dag_run_id": r, "rendered_fields": {"op_kwargs": {"external_dag_id": "x"}}}, raising=False)
+    out = tmp_path / "s.json"
+    assert cli.main(["fetch", "--url", URL, "-o", str(out), "--infer-sensors"]) == 0
+    data = json.loads(out.read_text())
+    assert data["inferred"] == [{"dag": "z", "task": "wait_x", "operator": "PythonSensor",
+                                 "source": "rendered", "targets": ["x"], "target_tasks": [],
+                                 "kind": "data"}]
+    assert "inferring sensors 1/1" in capsys.readouterr().err
+    assert cli.main(["downstream", "x", str(out)]) == 0
+    assert "z" in capsys.readouterr().out
+
+
+def test_fetch_without_infer_flag_has_no_inferred(tmp_path, live):
+    out = tmp_path / "s.json"
+    assert cli.main(["fetch", "--url", URL, "-o", str(out)]) == 0
+    assert "inferred" not in json.loads(out.read_text())

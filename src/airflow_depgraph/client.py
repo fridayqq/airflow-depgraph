@@ -124,3 +124,17 @@ class AirflowClient:
 
     def tasks(self, dag_id: str) -> list[dict]:
         return self.get(f"/api/v2/dags/{self._q(dag_id)}/tasks")["tasks"]
+
+    def task_instance(self, dag_id: str, run_id: str, task_id: str) -> dict:
+        return self.get(f"/api/v2/dags/{self._q(dag_id)}/dagRuns/{self._q(run_id)}"
+                        f"/taskInstances/{self._q(task_id)}")
+
+    def dag_source(self, dag_id: str) -> str:
+        return self.get(f"/api/v2/dagSources/{self._q(dag_id)}").get("content") or ""
+
+    def task_log(self, dag_id: str, run_id: str, task_id: str, try_number: int) -> str:
+        data = self.get(f"/api/v2/dags/{self._q(dag_id)}/dagRuns/{self._q(run_id)}"
+                        f"/taskInstances/{self._q(task_id)}/logs/{int(try_number)}",
+                        full_content="true")
+        content = data.get("content")
+        return content if isinstance(content, str) else json.dumps(content)

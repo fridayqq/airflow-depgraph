@@ -163,3 +163,134 @@ def test_page_without_catalog_still_renders():
             raise ApiError("403 on /api/v2/dags: reason", 403, "/api/v2/dags")
     html = PageBuilder("u", Settings(), client_factory=NoCatalog).page("tok", None, False)
     assert "dag:b" in html and "dag:lonely" not in html
+
+
+# ---------- inferred sensor links (background refresh) ----------
+
+class InferClient:
+    """Catalog: a, waiter, secret. waiter.wait_a is a PythonSensor that waits on a (rendered)."""
+    made = []
+    error = None
+
+    def __init__(self, url, token=None, timeout=None):
+        self.token = token
+        InferClient.made.append(token)
+
+    def list_dags(self):
+        if InferClient.error:
+            raise InferClient.error
+        return [{"dag_id": d} for d in ("a", "waiter", "secret")]
+
+    def tasks(self, dag_id):
+        return [{"task_id": "wait_a", "operator_name": "PythonSensor"}] if dag_id == "waiter" else []
+
+    def dag_runs(self, dag_id, limit):
+        return [{"dag_run_id": "r1"}]
+
+    def task_instance(self, dag_id, run_id, task_id):
+        return {"dag_run_id": run_id, "try_number": 1,
+                "rendered_fields": {"op_kwargs": {"external_dag_id": "a"}}}
+
+    def dag_source(self, dag_id):
+        return ""
+
+    def task_log(self, *a):
+        return ""
+
+
+def _cache(t, interval=60):
+    from airflow_depgraph.web import InferenceCache
+    InferClient.made.clear()
+    InferClient.error = None
+    return InferenceCache("u", interval, client_factory=InferClient, wall_clock=lambda: t[0],
+                          start_thread=False)
+
+
+def test_inference_refresh_uses_token_and_respects_interval():
+    t = [1000.0]
+    c = _cache(t)
+    tok = _jwt({"exp": 5000})
+    assert c.current() is None and c.due()
+    c.offer(tok)
+    assert c.refresh() is True
+    inferred, at = c.current()
+    assert at == 1000.0 and InferClient.made == [tok]
+    assert inferred == [{"dag": "waiter", "task": "wait_a", "operator": "PythonSensor",
+                         "source": "rendered", "targets": ["a"], "target_tasks": [], "kind": "data"}]
+    t[0] = 1030
+    assert not c.due()
+    t[0] = 1061
+    assert c.due()
+
+
+def test_inference_without_token_skips_and_stays_due():
+    t = [1000.0]
+    c = _cache(t)
+    c.offer("not-a-jwt")
+    c.offer(_jwt({"exp": 10}))          # expired
+    assert c.refresh() is False and InferClient.made == [] and c.due()
+
+
+def test_inference_uses_most_recent_token_and_drops_rejected_one():
+    t = [1000.0]
+    c = _cache(t)
+    first, second = _jwt({"exp": 5000, "sub": "1"}), _jwt({"exp": 5000, "sub": "2"})
+    c.offer(first)
+    c.offer(second)
+    c.refresh()
+    assert InferClient.made == [second]
+    InferClient.error = ApiError("401 on /api/v2/dags", 401, "/api/v2/dags")
+    t[0] = 2000
+    assert c.refresh() is False
+    assert c.current()[1] == 1000.0          # previous result kept
+    t[0] = 3000
+    assert c.refresh() is False and InferClient.made == [second, second]  # token forgotten
+
+
+def test_inference_token_expiring_before_cycle_is_not_used():
+    t = [1000.0]
+    c = _cache(t)
+    c.offer(_jwt({"exp": 1500}))
+    t[0] = 1600
+    assert c.refresh() is False and InferClient.made == []
+
+
+class _Stub:
+    def __init__(self, result):
+        self.result, self.offered = result, []
+
+    def offer(self, token):
+        self.offered.append(token)
+
+    def current(self):
+        return self.result
+
+
+INFERRED = [
+    {"dag": "b", "task": "wait_a", "source": "rendered", "targets": ["a", "secret"], "kind": "data"},
+    {"dag": "secret", "task": "wait_b", "source": "source", "targets": ["b"], "kind": "data"},
+    {"dag": "lonely", "task": "guard_a", "source": "rendered", "targets": ["a"], "kind": "guard"},
+]
+
+
+def test_page_merges_inferred_links_visible_to_viewer():
+    b = PageBuilder("u", Settings(infer_sensors=True), client_factory=FakeClient)
+    assert b.inference is not None
+    b.inference = _Stub((INFERRED, 0.0))
+    html = b.page("tok", None, False)
+    assert b.inference.offered == ["tok"]
+    assert '"id": "sensor-inferred:b:wait_a"' in html and '"inferred": "rendered"' in html
+    assert '"kind": "guard"' in html                       # guard drawn (toggle on the page)
+    assert "secret" not in html                            # viewer's catalog has no "secret"
+    assert "sensor links: 1, updated 00:00 UTC" in html
+
+
+def test_page_before_first_inference_says_so():
+    b = PageBuilder("u", Settings(infer_sensors=True), client_factory=FakeClient)
+    b.inference = _Stub(None)
+    assert "sensor links: first refresh running" in b.page("tok", None, False)
+
+
+def test_page_without_infer_setting_has_no_inference():
+    b = PageBuilder("u", Settings(), client_factory=FakeClient)
+    assert b.inference is None and "sensor links:" not in b.page("tok", None, False)

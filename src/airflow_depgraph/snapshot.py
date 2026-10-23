@@ -75,10 +75,65 @@ class Snapshot:
     edges: list[dict]
     dags: dict[str, dict] | None = None
     catalog: dict[str, dict] | None = None
+    inferred: list[dict] | None = None
 
     @cached_property
     def graph(self) -> Graph:
-        return Graph.from_payload(self.nodes, self.edges)
+        """Explicit plus inferred dependencies; deploy guards are left out."""
+        return self.graph_for()
+
+    def graph_for(self, inferred: bool = True, guards: bool = False) -> Graph:
+        if not inferred:
+            return Graph.from_payload(self.nodes, self.edges)
+        return Graph.from_payload(*with_inferred(self.nodes, self.edges, self.inferred,
+                                                 include_guards=guards))
+
+
+def _usable(entry: object) -> bool:
+    return (isinstance(entry, dict) and isinstance(entry.get("dag"), str)
+            and isinstance(entry.get("task"), str) and isinstance(entry.get("targets"), list)
+            and entry.get("source") not in (None, "none") and bool(entry["targets"]))
+
+
+def with_inferred(nodes: list[dict], edges: list[dict], inferred: list[dict] | None, *,
+                  include_guards: bool = False) -> tuple[list[dict], list[dict]]:
+    """Add one sensor link node per inferred sensor: dag:<target> -> node -> dag:<sensor DAG>."""
+    if not inferred:
+        return nodes, edges
+    nodes, edges = list(nodes), list(edges)
+    ids = {n["id"] for n in nodes}
+
+    def add(node: dict) -> None:
+        if node["id"] not in ids:
+            ids.add(node["id"])
+            nodes.append(node)
+
+    for e in inferred:
+        if not _usable(e) or (e.get("kind") == "guard" and not include_guards):
+            continue
+        link = f"sensor-inferred:{e['dag']}:{e['task']}"
+        if link in ids:
+            continue
+        add({"id": link, "label": e["task"], "type": "sensor", "inferred": e["source"],
+             "kind": e.get("kind") or "data"})
+        add({"id": "dag:" + e["dag"], "label": e["dag"], "type": "dag"})
+        edges.append({"source_id": link, "target_id": "dag:" + e["dag"]})
+        for target in dict.fromkeys(t for t in e["targets"] if isinstance(t, str)):
+            add({"id": "dag:" + target, "label": target, "type": "dag"})
+            edges.append({"source_id": "dag:" + target, "target_id": link})
+    return nodes, edges
+
+
+def visible_inferred(inferred: list[dict], visible: set[str]) -> list[dict]:
+    """Inferred sensors reduced to the DAGs one viewer may see (sensor DAG and targets)."""
+    out = []
+    for e in inferred:
+        if not _usable(e) or e["dag"] not in visible:
+            continue
+        targets = [t for t in e["targets"] if t in visible]
+        if targets:
+            out.append({**e, "targets": targets})
+    return out
 
 
 def _tag_name(tag: object) -> str:
@@ -112,6 +167,9 @@ def load(path: Path) -> Snapshot:
         raise SnapshotError(f"snapshot format {fmt!r} is not supported (this version reads format {FORMAT})")
 
     nodes, edges = validate_payload(data)
+    inferred = data.get("inferred")
+    if inferred is not None and not isinstance(inferred, list):
+        raise SnapshotError("snapshot 'inferred' must be a list")
     return Snapshot(
         format=fmt,
         fetched_at=data.get("fetched_at", ""),
@@ -121,6 +179,7 @@ def load(path: Path) -> Snapshot:
         edges=edges,
         dags=data.get("dags"),
         catalog=data.get("catalog"),
+        inferred=inferred,
     )
 
 
@@ -137,6 +196,8 @@ def dump(snap: Snapshot, path: Path) -> None:
         payload["dags"] = snap.dags
     if snap.catalog is not None:
         payload["catalog"] = snap.catalog
+    if snap.inferred is not None:
+        payload["inferred"] = snap.inferred
 
     path = Path(path)
     tmp = path.with_name(path.name + ".tmp")

@@ -8,17 +8,17 @@
 :root {
   --bg: #fcfcfb; --panel: #ffffff; --fg: #0b0b0b; --mut: #52514e; --line: #e5e4e0; --acc: #2a78d6;
   --c-dag: #2a78d6; --c-asset: #eb6834; --c-trigger: #1baf7a; --c-sensor: #eda100;
-  --critical: #d03b3b; --warning: #fab219; --edge: #b9b7b0; --shadow: rgba(0, 0, 0, .15);
+  --critical: #d03b3b; --warning: #fab219; --edge: #b9b7b0; --guard: #8f8d86; --shadow: rgba(0, 0, 0, .15);
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #1a1a19; --panel: #22221f; --fg: #f0efec; --mut: #c3c2b7; --line: #3a3935; --acc: #3987e5;
-    --c-dag: #3987e5; --c-asset: #d95926; --c-trigger: #199e70; --c-sensor: #c98500; --edge: #55534d; --shadow: rgba(0, 0, 0, .5);
+    --c-dag: #3987e5; --c-asset: #d95926; --c-trigger: #199e70; --c-sensor: #c98500; --edge: #55534d; --guard: #8a8880; --shadow: rgba(0, 0, 0, .5);
   }
 }
 :root[data-theme="dark"] {
   --bg: #1a1a19; --panel: #22221f; --fg: #f0efec; --mut: #c3c2b7; --line: #3a3935; --acc: #3987e5;
-  --c-dag: #3987e5; --c-asset: #d95926; --c-trigger: #199e70; --c-sensor: #c98500; --edge: #55534d; --shadow: rgba(0, 0, 0, .5);
+  --c-dag: #3987e5; --c-asset: #d95926; --c-trigger: #199e70; --c-sensor: #c98500; --edge: #55534d; --guard: #8a8880; --shadow: rgba(0, 0, 0, .5);
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
@@ -61,6 +61,8 @@ aside a { color: var(--acc); }
   width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent;
   border-bottom: 11px solid var(--c-trigger); border-radius: 0;
 }
+.legend i.dia.inf { background: none; border: 1.5px dashed var(--c-sensor); }
+.legend i.dia.grd { background: none; border: 1.5px dashed var(--guard); }
 .legend i.ring { background: none; border: 2.5px solid var(--critical); }
 .legend i.ring.warn { border-color: var(--warning); }
 #tip {
@@ -96,12 +98,15 @@ text.lbl {
   <label class="t"><input type="checkbox" id="onlyActive" checked> only active DAGs</label>
   <label class="t" id="tagWrap"><input type="checkbox" id="onlyTags" checked> <span id="tagLbl">only tags</span></label>
   <label class="t" id="connWrap"><input type="checkbox" id="conn"> + connected DAGs</label>
+  <label class="t" id="guardWrap"><input type="checkbox" id="showGuards"> show deploy guards</label>
   <label class="t" id="hlWrap"><input type="checkbox" id="hl"> __HL_LABEL__</label>
   <span class="legend">
     <span><i style="background:var(--c-dag)"></i>DAG</span>
     <span><i class="sq" style="background:var(--c-asset)"></i>asset</span>
     <span><i class="tri"></i>trigger</span>
     <span><i class="dia"></i>sensor</span>
+    <span id="lgInf"><i class="dia inf"></i>inferred sensor</span>
+    <span id="lgGuard"><i class="dia grd"></i>deploy guard</span>
     <span><i class="ring"></i>failed (pipeline)</span>
     <span><i class="ring warn"></i>failed (tests only)</span>
   </span>
@@ -121,13 +126,24 @@ const css = k => getComputedStyle(document.documentElement).getPropertyValue(k).
 const COLOR = type => css({dag: '--c-dag', asset: '--c-asset', trigger: '--c-trigger', sensor: '--c-sensor'}[type] || '--c-dag');
 
 const byId = new Map(DATA.nodes.map(n => [n.id, n]));
-const outM = new Map(), inM = new Map();
+// Inferred sensor links (fetch --infer-sensors) are dashed; deploy guards (wait for a DAG NOT to
+// run) are grey and, with their edges, left out of everything unless "show deploy guards" is on.
+const isGuard = id => byId.get(id).kind === 'guard';
 DATA.edges.forEach(e => {
-  if (!outM.has(e.s)) outM.set(e.s, []);
-  if (!inM.has(e.t)) inM.set(e.t, []);
-  outM.get(e.s).push(e.t);
-  inM.get(e.t).push(e.s);
+  e.inf = !!(byId.get(e.s).inferred || byId.get(e.t).inferred);
+  e.guard = isGuard(e.s) || isGuard(e.t);
 });
+const outM = new Map(), inM = new Map();
+function buildAdj() {
+  outM.clear(); inM.clear();
+  DATA.edges.forEach(e => {
+    if (e.guard && !box('showGuards').checked) return;
+    if (!outM.has(e.s)) outM.set(e.s, []);
+    if (!inM.has(e.t)) inM.set(e.t, []);
+    outM.get(e.s).push(e.t);
+    inM.get(e.t).push(e.s);
+  });
+}
 
 // Nodes reachable from startIds along adj. Depth counts DAG hops; assets, triggers and sensors in between are free.
 function reach(startIds, adj, depth) {
@@ -155,6 +171,7 @@ const zoom = d3.zoom().scaleExtent([0.15, 6]).on('zoom', ev => root.attr('transf
 svg.call(zoom);
 const tip = document.getElementById('tip'), side = document.getElementById('side'), qEl = document.getElementById('q');
 const box = id => document.getElementById(id);
+buildAdj();
 let nodes = [], links = [], nodeMap = new Map(), sim = null;
 let selectedId = null, searchKeep = null, lastTargets = [];
 
@@ -164,6 +181,7 @@ const failing = n => n.fail && !n.fail.paused;
 const TAGS = META.catalog === false ? [] : (META.tags || []);  // no catalog: no tags to filter on
 const hasTag = n => (n.tags || []).some(t => TAGS.includes(t));
 const isLink = id => byId.get(id).type !== 'dag';
+const loose = n => !!(n.unlinked || (n.guard_only && !box('showGuards').checked));
 
 // DAG ids of other DAGs one edge or one link node away from id.
 function neighbours(id) {
@@ -180,16 +198,17 @@ function filtered() {
   const tagOn = TAGS.length > 0 && box('onlyTags').checked, active = box('onlyActive').checked;
   const okDag = n => !(active && n.paused);
   const dagsAll = DATA.nodes.filter(n => n.type === 'dag');
-  const dags = new Set(dagsAll.filter(n => !n.unlinked && (!tagOn || hasTag(n)) && okDag(n)).map(n => n.id));
+  const dags = new Set(dagsAll.filter(n => !loose(n) && (!tagOn || hasTag(n)) && okDag(n)).map(n => n.id));
   if (tagOn && box('conn').checked) [...dags].forEach(id => neighbours(id).forEach(x => { if (okDag(byId.get(x))) dags.add(x); }));
-  if (!box('onlyLinked').checked) dagsAll.filter(n => n.unlinked && (!tagOn || hasTag(n)) && okDag(n)).forEach(n => dags.add(n.id));
+  if (!box('onlyLinked').checked) dagsAll.filter(n => loose(n) && (!tagOn || hasTag(n)) && okDag(n)).forEach(n => dags.add(n.id));
   // A link node stays while it joins two kept nodes, or nothing around it was filtered out.
-  const keep = new Set([...dags, ...DATA.nodes.filter(n => n.type !== 'dag').map(n => n.id)]);
+  const guards = box('showGuards').checked;
+  const keep = new Set([...dags, ...DATA.nodes.filter(n => n.type !== 'dag' && (guards || n.kind !== 'guard')).map(n => n.id)]);
   for (let changed = true; changed;) {
     changed = false;
     for (const id of [...keep]) {
       if (!isLink(id)) continue;
-      const around = [...(outM.get(id) || []), ...(inM.get(id) || [])];
+      const around = [...(outM.get(id) || []), ...(inM.get(id) || [])];  // guard edges only when shown
       const kept = around.filter(x => keep.has(x)).length;
       if (kept < 2 && kept < around.length) { keep.delete(id); changed = true; }
     }
@@ -209,15 +228,20 @@ function buildView() {
   if (hideAssets) {  // collapse dag -> link(s) -> dag into dag -> dag; via = the last link on the way
     const adj = new Map(), coll = new Map();
     es.forEach(e => { if (!adj.has(e.s)) adj.set(e.s, []); adj.get(e.s).push(e.t); });
-    const add = (s, t, via) => { if (s !== t && !coll.has(s + '|' + t)) coll.set(s + '|' + t, {s, t, via}); };
+    const add = (s, t, via, x) => {
+      const k = s + '|' + t, f = {inf: !!byId.get(x || s).inferred, guard: x ? isGuard(x) : false};
+      if (s === t) return;
+      if (!coll.has(k)) coll.set(k, {s, t, via, ...f});
+      else if (!f.inf && !f.guard) Object.assign(coll.get(k), {via, inf: false, guard: false});  // an explicit path wins
+    };
     es.forEach(e => {
       if (byId.get(e.s).type !== 'dag') return;
-      if (byId.get(e.t).type === 'dag') { add(e.s, e.t, null); return; }
+      if (byId.get(e.t).type === 'dag') { add(e.s, e.t, null, null); return; }
       const seen = new Set([e.t]), stack = [e.t];
       while (stack.length) {
         const x = stack.pop();
         for (const y of adj.get(x) || []) {
-          if (byId.get(y).type === 'dag') add(e.s, y, byId.get(x).label);
+          if (byId.get(y).type === 'dag') add(e.s, y, byId.get(x).label, x);
           else if (!seen.has(y)) { seen.add(y); stack.push(y); }
         }
       }
@@ -226,9 +250,10 @@ function buildView() {
     keep = new Set([...keep].filter(id => byId.get(id).type === 'dag'));
   }
   const prev = nodeMap;
-  nodes = [...keep].map(id => Object.assign({}, byId.get(id), prev.has(id) ? {x: prev.get(id).x, y: prev.get(id).y} : {}));
+  nodes = [...keep].map(id => Object.assign({}, byId.get(id), {unlinked: loose(byId.get(id))},
+    prev.has(id) && !loose(byId.get(id)) ? {x: prev.get(id).x, y: prev.get(id).y} : {}));
   nodeMap = new Map(nodes.map(n => [n.id, n]));
-  links = es.map(e => ({source: e.s, target: e.t, via: e.via}));
+  links = es.map(e => ({source: e.s, target: e.t, via: e.via, inf: e.inf, guard: e.guard}));
   const total = DATA.nodes.filter(n => n.type === 'dag').length, shown = nodes.filter(n => n.type === 'dag').length;
   box('shown').textContent = `shown ${shown} of ${total} DAGs`;
   draw();
@@ -252,7 +277,7 @@ function draw() {
     .attr('markerWidth', 6).attr('markerHeight', 6).attr('orient', 'auto')
     .append('path').attr('d', 'M0,-3L7,0L0,3').attr('fill', edgeCol);
   const link = root.append('g').attr('stroke-opacity', .6).selectAll('line').data(links).join('line')
-    .attr('stroke-width', 1.2).attr('marker-end', 'url(#arrow)');
+    .attr('stroke-width', 1.2).attr('marker-end', 'url(#arrow)').attr('stroke-dasharray', l => l.inf || l.guard ? '4 3' : null);
   const node = root.append('g').selectAll('g').data(nodes, d => d.id).join('g').attr('class', 'n').style('cursor', 'pointer')
     .call(d3.drag().filter((ev, d) => !d.unlinked && !ev.ctrlKey && !ev.button)
       .on('start', (ev, d) => { if (!ev.active) sim.alphaTarget(.3).restart(); d.fx = d.x; d.fy = d.y; })
@@ -263,7 +288,8 @@ function draw() {
     if (d.type === 'dag') g.append('circle').attr('r', R).attr('fill', c);
     else if (d.type === 'asset') g.append('rect').attr('x', -R).attr('y', -R).attr('width', 2 * R).attr('height', 2 * R).attr('rx', 1.5).attr('fill', c);
     else if (d.type === 'trigger') g.append('path').attr('d', `M0,${-R - 1}L${R + 1},${R}L${-R - 1},${R}Z`).attr('fill', c);
-    else g.append('rect').attr('x', -R).attr('y', -R).attr('width', 2 * R).attr('height', 2 * R).attr('transform', 'rotate(45)').attr('fill', c);
+    else g.append('rect').attr('x', -R).attr('y', -R).attr('width', 2 * R).attr('height', 2 * R).attr('transform', 'rotate(45)')
+      .attr('fill', d.inferred ? css('--bg') : c).attr('stroke-dasharray', d.inferred ? '2 1.5' : null);
     if (d.paused) g.select('circle,rect,path').attr('fill-opacity', .5);
     if (failing(d)) g.append('circle').attr('r', R + 3).attr('fill', 'none')
       .attr('stroke', d.fail.kind === 'tests' ? css('--warning') : css('--critical')).attr('stroke-width', 2.5);
@@ -274,8 +300,8 @@ function draw() {
     .on('mouseleave', () => { tip.style.display = 'none'; })
     .on('click', (ev, d) => select(d.id))
     .on('dblclick', (ev, d) => { d.pinned = !d.pinned; if (!d.pinned) { d.fx = null; d.fy = null; } ev.stopPropagation(); });
-  const loose = nodes.filter(n => n.unlinked);
-  placeUnlinked(loose);
+  const grid = nodes.filter(n => n.unlinked);
+  placeUnlinked(grid);
   sim = d3.forceSimulation(nodes.filter(n => !n.unlinked))
     .force('link', d3.forceLink(links).id(d => d.id).distance(40).strength(.6))
     .force('charge', d3.forceManyBody().strength(-120))
@@ -294,6 +320,7 @@ function draw() {
 
 function facts(d) {
   let f = '<span class="badge">' + esc(d.type) + '</span>';
+  if (d.inferred) f += ` <span class="badge">${d.kind === 'guard' ? 'deploy guard' : 'inferred'}</span>`;
   if (d.paused) f += ' <span class="badge">paused</span>';
   (d.tags || []).forEach(t => { f += ` <span class="badge">#${esc(t)}</span>`; });
   if (d.fail) f += ` <span class="badge ${d.fail.kind === 'tests' ? 'warn' : 'crit'}">${d.fail.kind === 'tests' ? 'tests failed' : 'pipeline failed'}${d.fail.paused ? ' · paused' : ''}</span> ${esc(d.fail.date || '')}`;
@@ -312,13 +339,16 @@ function renderSide(d, msg) {
   }
   const base = /^https?:\/\//.test(META.source || '') ? String(META.source).replace(/\/+$/, '') : '';
   const openLink = d.type === 'dag' && base ? `<p><a href="${esc(base + '/dags/' + encodeURIComponent(d.id.slice(4)))}" ${LINK_TARGET}>Open in Airflow ↗</a></p>` : '';
-  if (d.unlinked) {
+  if (loose(d)) {
     side.innerHTML = `<h2>${esc(d.label)}</h2><div>${facts(d)}</div><p class="hint">No explicit dependencies: no asset, trigger or sensor links this DAG to another.</p>` + openLink;
     return;
   }
   const down = dagList(d.id, outM), up = dagList(d.id, inM);
+  const SRC = {rendered: 'rendered fields', source: 'DAG source', logs: 'task log'};
+  const why = d.inferred ? `<p class="hint">inferred from ${esc(SRC[d.inferred] || d.inferred)}` +
+    (d.kind === 'guard' ? '; a deploy guard: it waits for the upstream DAG <b>not</b> to be running.' : '.') + '</p>' : '';
   const li = n => `<li data-id="${esc(n.id)}">${failing(n) ? '⚠ ' : ''}${esc(n.label)}${n.hl ? ' ★' : ''}</li>`;
-  side.innerHTML = `<h2>${esc(d.label)}</h2><div>${facts(d)}</div>` +
+  side.innerHTML = `<h2>${esc(d.label)}</h2><div>${facts(d)}</div>` + why +
     `<h3>↓ Downstream (${down.length})</h3><ul>${down.map(li).join('') || '<li class="hint">none</li>'}</ul>` +
     `<h3>↑ Upstream (${up.length})</h3><ul>${up.map(li).join('') || '<li class="hint">none</li>'}</ul>` +
     openLink;
@@ -335,10 +365,11 @@ function applyHighlight() {
   const hl = box('hl').checked;
   const keep = searchKeep || (selectedId ? chain(selectedId) : null);
   const lit = d => hl && d.hl;
+  const outline = d => d.inferred ? css(d.kind === 'guard' ? '--guard' : '--c-sensor') : null;
   root.selectAll('g.n').style('opacity', d => (keep && !keep.has(d.id)) ? .12 : 1)
-    .each(function (d) { d3.select(this).select('circle,rect,path').attr('stroke', lit(d) ? css('--fg') : null).attr('stroke-width', lit(d) ? 2 : null); });
+    .each(function (d) { d3.select(this).select('circle,rect,path').attr('stroke', lit(d) ? css('--fg') : outline(d)).attr('stroke-width', lit(d) ? 2 : (d.inferred ? 1.5 : null)); });
   root.selectAll('line').style('opacity', l => keep ? ((keep.has(l.source.id) && keep.has(l.target.id)) ? .9 : .05) : .6)
-    .attr('stroke', l => keep && keep.has(l.source.id) && keep.has(l.target.id) ? css('--acc') : css('--edge'));
+    .attr('stroke', l => keep && keep.has(l.source.id) && keep.has(l.target.id) ? css('--acc') : css(l.guard ? '--guard' : '--edge'));
 }
 
 function fitTo(ids) {
@@ -398,11 +429,13 @@ function syncHash() {  // keep the URL fragment in step with the toggles and the
   // These default to on, so the hash carries their negation (conn defaults to off).
   NEG.forEach(([flag, id]) => { if (!box(id).checked) parts.push(flag); });
   if (box('conn').checked) parts.push('conn');
+  if (box('showGuards').checked) parts.push('guards');
   try { history.replaceState(null, '', parts.length ? '#' + parts.join(',') : location.pathname + location.search); } catch (e) { /* file:// or sandboxed */ }
 }
 qEl.addEventListener('input', () => { runSearch(true); syncHash(); });
 ['hideAssets', 'onlyFail', 'onlyLinked', 'onlyActive', 'onlyTags', 'conn'].forEach(id => box(id).addEventListener('change', () => { buildView(); syncHash(); }));
 box('hl').addEventListener('change', () => { applyHighlight(); syncHash(); });
+box('showGuards').addEventListener('change', () => { buildAdj(); buildView(); if (selectedId) renderSide(byId.get(selectedId)); syncHash(); });
 svg.on('click', ev => { if (ev.target === svg.node()) { selectedId = null; searchKeep = null; renderSide(null); applyHighlight(); } });
 if (window.matchMedia) {
   const mq = matchMedia('(prefers-color-scheme: dark)');
@@ -410,13 +443,16 @@ if (window.matchMedia) {
 }
 
 if (!DATA.nodes.some(n => n.hl)) box('hlWrap').hidden = true;
+if (!DATA.nodes.some(n => n.kind === 'guard')) { box('guardWrap').hidden = true; box('lgGuard').hidden = true; }
+if (!DATA.nodes.some(n => n.inferred && n.kind !== 'guard')) box('lgInf').hidden = true;
 if (TAGS.length) box('tagLbl').textContent = 'only tags: ' + TAGS.join(', ');
 else { box('tagWrap').hidden = true; box('connWrap').hidden = true; }
 if (META.airflow_version) { box('ver').textContent = 'Airflow ' + META.airflow_version; box('ver').hidden = false; }
 
-// Hash flags: #q=<text>,onlyFail,hideAssets,hl,allLinks,paused,allTags,conn (any subset)
+// Hash flags: #q=<text>,onlyFail,hideAssets,hl,allLinks,paused,allTags,conn,guards (any subset)
 const flags = location.hash.replace(/^#/, '').split(',').filter(Boolean);
 ['hideAssets', 'onlyFail', 'hl', 'conn'].forEach(id => { if (flags.includes(id)) box(id).checked = true; });
+if (flags.includes('guards') && !box('guardWrap').hidden) { box('showGuards').checked = true; buildAdj(); }
 NEG.forEach(([flag, id]) => { if (flags.includes(flag)) box(id).checked = false; });
 renderSide(null);
 buildView();

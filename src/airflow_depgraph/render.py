@@ -5,11 +5,12 @@ from __future__ import annotations
 import html
 import json
 import re
+from collections import Counter
 from pathlib import Path
 
 from airflow_depgraph.graph import Graph, reach_dags
 from airflow_depgraph.presets import Settings
-from airflow_depgraph.snapshot import Snapshot
+from airflow_depgraph.snapshot import Snapshot, with_inferred
 
 _PKG = Path(__file__).parent
 TEMPLATE = _PKG / "templates" / "graph.html"
@@ -31,10 +32,14 @@ def build_view(snap: Snapshot, s: Settings, status_override: dict | None = None)
         raise ValueError(f"invalid highlight regex {s.highlight!r}: {exc}") from exc
 
     # Stale DAGs (gone from the DAG folder) are dropped with their edges.
+    # Inferred deploy guards are on the page (behind a toggle) but never counted as reach.
     stale = {"dag:" + d for d, c in catalog.items() if c.get("is_stale")}
-    raw_nodes = [n for n in snap.nodes if n["id"] not in stale]
-    raw_edges = [e for e in snap.edges if e["source_id"] not in stale and e["target_id"] not in stale]
-    g = Graph.from_payload(raw_nodes, raw_edges) if stale else snap.graph
+    all_nodes, all_edges = with_inferred(snap.nodes, snap.edges, snap.inferred, include_guards=True)
+    raw_nodes = [n for n in all_nodes if n["id"] not in stale]
+    raw_edges = [e for e in all_edges if e["source_id"] not in stale and e["target_id"] not in stale]
+    guards = {n["id"] for n in raw_nodes if n.get("kind") == "guard"}
+    g = Graph.from_payload(raw_nodes, [e for e in raw_edges if e["source_id"] not in guards
+                                       and e["target_id"] not in guards])
 
     def dag_fields(node: dict, dag_id: str) -> None:
         info = dags.get(dag_id) or {}
@@ -50,6 +55,8 @@ def build_view(snap: Snapshot, s: Settings, status_override: dict | None = None)
         if highlight and highlight.search(dag_id):
             node["hl"] = True
 
+    indeg = Counter(e["target_id"] for e in raw_edges)
+    outdeg = Counter(e["source_id"] for e in raw_edges)
     nodes = []
     for raw in raw_nodes:
         nid, ntype = raw["id"], raw["type"]
@@ -62,15 +69,19 @@ def build_view(snap: Snapshot, s: Settings, status_override: dict | None = None)
             "type": ntype,
             "down": reach_dags(g, nid, "downstream"),
             "up": reach_dags(g, nid, "upstream"),
-            "indeg": len(g.inc[nid]),
-            "outdeg": len(g.out[nid]),
+            "indeg": indeg[nid],
+            "outdeg": outdeg[nid],
         }
         if ntype == "dag":
             dag_fields(node, nid.removeprefix("dag:"))
+            if indeg[nid] + outdeg[nid] and not g.inc[nid] and not g.out[nid]:
+                node["guard_only"] = True       # unlinked while the page hides deploy guards
+        if raw.get("inferred"):
+            node["inferred"], node["kind"] = raw["inferred"], raw.get("kind") or "data"
         nodes.append(node)
 
     # Catalog DAGs with no cross-DAG dependency at all.
-    in_graph = {n["id"] for n in snap.nodes}
+    in_graph = {n["id"] for n in all_nodes}
     for dag_id in sorted(catalog):
         nid = "dag:" + dag_id
         if nid in in_graph or nid in stale:
@@ -93,6 +104,9 @@ def build_view(snap: Snapshot, s: Settings, status_override: dict | None = None)
         "unlinked": sum(1 for n in dag_nodes if n.get("unlinked")),
         "paused": sum(1 for n in dag_nodes if n["paused"]),
         "tagged": sum(1 for n in dag_nodes if set(n["tags"]) & set(s.tags)),
+        "inferred": None if snap.inferred is None else sum(
+            1 for n in nodes if n.get("inferred") and n["kind"] != "guard"),
+        "guards": sum(1 for n in nodes if n.get("kind") == "guard"),
         "snapshot": snap.fetched_at,
         "source": snap.source,
     }
@@ -103,7 +117,11 @@ def _plural(n: int, one: str, many: str) -> str:
     return f"{n} {one if n == 1 else many}"
 
 
-def _stats_line(st: dict) -> str:
+def _stats_line(st: dict, inferred_note: str | None = None, inferred_updated: str | None = None) -> str:
+    if inferred_note is None and st.get("inferred") is not None:
+        inferred_note = f"sensor links: {st['inferred']}"
+        if inferred_updated:
+            inferred_note += f", updated {inferred_updated}"
     return " · ".join(
         [
             _plural(st["dags"], "DAG", "DAGs"),
@@ -113,7 +131,7 @@ def _stats_line(st: dict) -> str:
             _plural(st["edges"], "edge", "edges"),
             f"failing now: {st['failing']}",
             f"snapshot {st['snapshot']}",
-        ]
+        ] + ([inferred_note] if inferred_note else [])
     )
 
 
@@ -122,7 +140,9 @@ def _json_for_script(obj: object) -> str:
     return json.dumps(obj).replace("<", "\\u003c")
 
 
-def render(snap: Snapshot, s: Settings, status_override: dict | None = None) -> str:
+def render(snap: Snapshot, s: Settings, status_override: dict | None = None, *,
+           inferred_note: str | None = None, inferred_updated: str | None = None) -> str:
+    """Header gets "sensor links: N[, updated <inferred_updated>]"; inferred_note replaces it."""
     view = build_view(snap, s, status_override)
     meta = {"source": snap.source, "airflow_version": snap.airflow_version, "tags": list(s.tags),
             "catalog": snap.catalog is not None}
@@ -130,7 +150,7 @@ def render(snap: Snapshot, s: Settings, status_override: dict | None = None) -> 
     values = {
         "TITLE": html.escape(s.title),
         "HL_LABEL": html.escape(s.highlight_label),
-        "STATS": html.escape(_stats_line(view["stats"])),
+        "STATS": html.escape(_stats_line(view["stats"], inferred_note, inferred_updated)),
         "DATA": _json_for_script(data),
         "SEARCH_RE": SEARCH_PATTERN,
         "D3": VENDOR_D3.read_text(encoding="utf-8"),
