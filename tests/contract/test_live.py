@@ -107,14 +107,14 @@ def test_contract_dags_are_nodes(snapshot):
 def test_asset_edge_from_producer_to_consumer(snapshot, capsys):
     _, path = snapshot
     assert cli.main(["downstream", "contract_producer", str(path), "--json"]) == 0
-    dags = [d["dag"] for d in json.loads(capsys.readouterr().out)["dags"]]
+    dags = [d["dag_id"] for d in json.loads(capsys.readouterr().out)["dags"]]
     assert "contract_consumer" in dags
 
 
 def test_trigger_edge_to_triggered_dag(snapshot, capsys):
     _, path = snapshot
     assert cli.main(["downstream", "contract_trigger", str(path), "--json"]) == 0
-    dags = [d["dag"] for d in json.loads(capsys.readouterr().out)["dags"]]
+    dags = [d["dag_id"] for d in json.loads(capsys.readouterr().out)["dags"]]
     assert "contract_triggered" in dags
 
 
