@@ -89,7 +89,8 @@ def test_downstream_json_schema(capsys):
     out = json.loads(capsys.readouterr().out)
     assert set(out) == {"dag", "direction", "depth", "dags"}
     assert out["depth"] == 1 and out["direction"] == "downstream"
-    assert set(out["dags"][0]) == {"dag_id", "hops", "via", "is_paused", "schedule", "owners"}
+    assert set(out["dags"][0]) == {"dag_id", "hops", "via", "is_paused", "schedule", "owners",
+                                   "parent", "state", "kind", "last_run_at"}
 
 
 def test_upstream_arrow(capsys):
@@ -319,7 +320,8 @@ def test_downstream_follows_inferred_sensor(inferred_file, capsys):
     assert cli.main(["downstream", "dag_i", inferred_file, "--json"]) == 0
     dags = json.loads(capsys.readouterr().out)["dags"]
     assert dags == [{"dag_id": "dag_x_cron", "hops": 1, "via": "sensor:wait_i (inferred)",
-                     "is_paused": None, "schedule": None, "owners": None}]
+                     "is_paused": None, "schedule": None, "owners": None, "parent": "dag_i",
+                     "state": None, "kind": None, "last_run_at": None}]
 
 
 def test_no_inferred_flag_ignores_them(inferred_file, capsys):
@@ -572,3 +574,45 @@ def test_status_task_list_error_warns_and_keeps_status(tmp_path, live, monkeypat
     assert "last_run" in data["dags"]["y"] and "tasks" not in data["dags"]["y"]
     assert data["dags"]["x"]["tasks"] == ["refresh_dashboard"]
     assert "warning: task list unavailable for 1 DAGs" in capsys.readouterr().err
+
+
+def test_text_row_shows_state_and_last_run(capsys):
+    assert cli.main(["downstream", "dag_a", FIX]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    dag_d = next(line for line in lines if "dag_d " in line and "→" in line)
+    assert dag_d.endswith(" · FAILED (tests) · last run 2026-10-22 05:30")
+    dag_l = next(line for line in lines if "dag_l_report " in line and "→" in line)
+    assert dag_l.endswith(" · ok · last run 2026-10-22 06:00")
+    dag_b = next(line for line in lines if "dag_b " in line and "→" in line)
+    assert dag_b.endswith("sched: —")
+
+
+def test_text_row_marks_paused_dag_without_status(capsys):
+    assert cli.main(["upstream", "dag_g", FIX]) == 0
+    line = next(x for x in capsys.readouterr().out.splitlines() if "dag_h " in x)
+    assert line.endswith("sched: — · paused")
+
+
+def test_json_row_has_parent_and_status(capsys):
+    assert cli.main(["downstream", "dag_a", FIX, "--json"]) == 0
+    rows = {r["dag_id"]: r for r in json.loads(capsys.readouterr().out)["dags"]}
+    assert rows["dag_d"]["parent"] == "dag_c"
+    assert rows["dag_d"]["state"] == "failed"
+    assert rows["dag_d"]["kind"] == "tests"
+    assert rows["dag_d"]["last_run_at"] == "2026-10-22T05:30:00Z"
+    assert rows["dag_b"]["parent"] == "dag_a" and rows["dag_b"]["state"] is None
+
+
+def test_tree_shows_parent_structure(capsys):
+    assert cli.main(["downstream", "dag_a", FIX, "--tree"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    body = lines[1:]
+    assert body[0] == "dag_a"
+    assert body[1] == "└ dag_b  via asset:team-orders"
+    assert "  └ dag_c  via asset:orders_clean" in body
+    assert "    └ dag_d  via trigger:orders_ready  · FAILED (tests)" in body
+
+
+def test_tree_and_json_are_mutually_exclusive(capsys):
+    assert cli.main(["downstream", "dag_a", FIX, "--tree", "--json"]) == 1
+    assert "--tree and --json cannot be used together" in capsys.readouterr().err

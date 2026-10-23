@@ -15,7 +15,7 @@ from pathlib import Path
 from airflow_depgraph import __version__
 from airflow_depgraph import snapshot as snapmod
 from airflow_depgraph.auth import CredentialsError, resolve_password, resolve_user
-from airflow_depgraph.cli_format import TITLES, format_hits, hits_json, stamp
+from airflow_depgraph.cli_format import TITLES, format_hits, format_tree, hits_json, stamp
 from airflow_depgraph.client import AirflowClient, ApiError
 from airflow_depgraph.graph import Hit, walk
 from airflow_depgraph.presets import PresetError, Settings, list_presets, resolve
@@ -239,6 +239,13 @@ def _compile(pattern: str) -> re.Pattern:
 
 
 def _dag_info(client: AirflowClient | None, snap: Snapshot, dag_id: str) -> dict:
+    """Schedule, pause and owners of a DAG, plus its last run status when the snapshot has it."""
+    info = _dag_facts(client, snap, dag_id)
+    info["last_run"] = None if client is not None else ((snap.dags or {}).get(dag_id) or {}).get("last_run")
+    return info
+
+
+def _dag_facts(client: AirflowClient | None, snap: Snapshot, dag_id: str) -> dict:
     cat = (snap.catalog or {}).get(dag_id) if client is not None else None
     if cat is not None:  # live: the catalog already holds what GET /dags/{id} would return
         return {"is_paused": cat.get("is_paused"), "schedule": cat.get("schedule"),
@@ -273,6 +280,8 @@ def _match_tasks(client, snap, hits, regex, info) -> list[Hit]:
 
 
 def _query(args: argparse.Namespace, direction: str) -> int:
+    if args.tree and args.json:
+        raise CliError("--tree and --json cannot be used together")
     s = _settings(args)
     if args.tasks_matching is not None and args.tasks_preset:
         raise CliError("use either --tasks-matching REGEX or --tasks-preset")
@@ -307,8 +316,12 @@ def _query(args: argparse.Namespace, direction: str) -> int:
         print(hits_json(dag, direction, args.depth, hits, info, regex is not None))
     else:
         header = f"{TITLES[direction]} of {dag} — {len(hits)} (depth ≤ {args.depth}, {stamp(snap if args.snapshot else None)})"
-        print(format_hits(hits, info, snap.source or s.url, direction, header,
-                          strip_prefix=s.asset_label_strip_prefix))
+        if args.tree:
+            print(header)
+            print(format_tree(hits, info, dag, strip_prefix=s.asset_label_strip_prefix))
+        else:
+            print(format_hits(hits, info, snap.source or s.url, direction, header,
+                              strip_prefix=s.asset_label_strip_prefix))
     return 0
 
 
@@ -435,6 +448,8 @@ def _parser() -> argparse.ArgumentParser:
         q.add_argument("snapshot", nargs="?", help="snapshot file; omit to query live")
         q.add_argument("--depth", type=_depth, default=5, help="maximum DAG hops, at least 1 (default 5)")
         q.add_argument("--json", action="store_true", help="print machine-readable JSON")
+        q.add_argument("--tree", action="store_true",
+                       help="print the DAGs as an indented tree, each under the DAG it was reached from")
         q.add_argument("--tasks-matching", metavar="REGEX",
                        help="keep DAGs having a task matching REGEX")
         q.add_argument("--tasks-preset", action="store_true", default=None,

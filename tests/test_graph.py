@@ -77,3 +77,11 @@ def test_dag_reached_via_two_assets_reported_once_at_min_hops():
     ]
     hits = walk(Graph.from_payload(nodes, edges), "s", "downstream")
     assert [(h.dag_id, h.hops) for h in hits] == [("t", 1)]
+
+
+def test_walk_parent_is_the_dag_one_hop_closer(small_graph):
+    from airflow_depgraph.graph import walk
+    hits = {h.dag_id: h for h in walk(small_graph, "dag_a", "downstream")}
+    assert hits["dag_b"].parent == "dag_a"
+    assert hits["dag_l_report"].parent == "dag_e"
+    assert hits["dag_d"].parent == "dag_c"

@@ -22,6 +22,7 @@ class Hit:
     hops: int
     via: str | None
     guard: bool = False  # the hop goes through an inferred deploy guard
+    parent: str | None = None  # the DAG one hop closer to the start (the start DAG for hop 1)
 
 
 @dataclass
@@ -73,24 +74,27 @@ def walk(g: Graph, start: str, direction: Direction, depth: int = 5) -> list[Hit
     hops = 0
 
     while frontier and hops < depth:
-        found: dict[str, tuple[str | None, bool]] = {}
-        queue: deque[tuple[str, str | None, bool]] = deque((d, None, False) for d in frontier)
+        # found: DAG -> (via, guard, parent); the queue carries the DAG each branch started from.
+        found: dict[str, tuple[str | None, bool, str]] = {}
+        queue: deque[tuple[str, str | None, bool, str]] = deque(
+            (d, None, False, d) for d in frontier)
         while queue:
-            current, via, guard = queue.popleft()
+            current, via, guard, origin = queue.popleft()
             for nxt in _neighbours(g, current, direction):
                 if _is_dag(g, nxt):
                     if nxt not in seen_dags and nxt not in found:
-                        found[nxt] = (via, guard)
+                        found[nxt] = (via, guard, origin)
                 elif nxt not in visited_links:
                     visited_links.add(nxt)
-                    queue.append((nxt, _link_label(g, nxt), g.nodes[nxt].guard))
+                    queue.append((nxt, _link_label(g, nxt), g.nodes[nxt].guard, origin))
 
         hops += 1
         next_frontier = []
         for dag_node in sorted(found):
             seen_dags.add(dag_node)
-            via, guard = found[dag_node]
-            hits.append(Hit(dag_id=dag_node.removeprefix("dag:"), hops=hops, via=via, guard=guard))
+            via, guard, origin = found[dag_node]
+            hits.append(Hit(dag_id=dag_node.removeprefix("dag:"), hops=hops, via=via, guard=guard,
+                            parent=origin.removeprefix("dag:")))
             next_frontier.append(dag_node)
         frontier = next_frontier
 
