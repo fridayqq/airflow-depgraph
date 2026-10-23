@@ -171,13 +171,14 @@ const chain = id => new Set([...reach([id], outM, Infinity), ...reach([id], inM,
 const svg = d3.select('#g'), W = () => svg.node().clientWidth, H = () => svg.node().clientHeight;
 const root = svg.append('g');
 const zoom = d3.zoom().scaleExtent([0.15, 6]).on('zoom', ev => { root.attr('transform', ev.transform); if (nodes.length) updateShown(); updateLabels(); });
+const scale = () => d3.zoomTransform(svg.node()).k;
 svg.call(zoom);
 const tip = document.getElementById('tip'), side = document.getElementById('side'), qEl = document.getElementById('q');
 const box = id => document.getElementById(id);
 buildAdj();
 let nodes = [], links = [], nodeMap = new Map(), sim = null;
 let selectedId = null, searchKeep = null, lastTargets = [];
-let focusKeep = null, pendingFit = false;  // focusKeep: nodes of the current selection or search; pendingFit: fit once the layout settles
+let focusKeep = null, pendingFit = false, initialSearch = false;  // focusKeep: nodes of the current selection or search; pendingFit: fit once the layout settles; initialSearch: the search from the page-load hash owns that fit
 
 function r(n) { return n.type === 'dag' ? 4 + Math.sqrt(n.down) * 2.2 : 3.5; }
 const failing = n => n.fail && !n.fail.paused;
@@ -321,6 +322,8 @@ function draw() {
     .force('link', d3.forceLink(links).id(d => d.id).distance(40).strength(.6))
     .force('charge', d3.forceManyBody().strength(-120))
     .force('center', d3.forceCenter(W() / 2, H() / 2))
+    .force('gravityX', d3.forceX(W() / 2).strength(0.06))  // keeps small disconnected components near the centre
+    .force('gravityY', d3.forceY(H() / 2).strength(0.06))
     .force('collide', d3.forceCollide(d => r(d) + 4))
     .on('tick', () => {
       link.each(function (l) {  // stop the line at the target's rim so the arrowhead stays visible
@@ -330,28 +333,30 @@ function draw() {
       node.attr('transform', d => `translate(${d.x},${d.y})`);
       placeLabels(lbl);
     })
-    .on('end', () => {  // first layout settled: fit to what is shown (not when a search picked the view)
+    .on('end', () => {  // layout settled after a filter toggle or the page load
       if (!pendingFit) return;
       pendingFit = false;
-      fitTo(lastTargets.length ? lastTargets : nodes.map(n => n.id));
+      if (initialSearch) { initialSearch = false; fitTo(lastTargets); } else fitAll();
     });
   node.filter(d => d.unlinked).attr('transform', d => `translate(${d.x},${d.y})`);
   placeLabels(lbl);
   applyHighlight();
 }
 
-// A label sits under its node.
-function placeLabels(sel) { sel.attr('transform', d => `translate(${d.x},${d.y + r(d) + 10})`); }
+// A label sits under its node, 10 screen pixels below the rim.
+function placeLabels(sel) { const k = scale(); sel.attr('transform', d => `translate(${d.x},${d.y + r(d) + 10 / k})`); }
 
 // Labels shown: the selected node, the focus set, DAGs as before (small graph, hubs, failing) and every DAG from ZOOM_LABELS.
 const ZOOM_LABELS = 1.8;
 function updateLabels() {
-  const k = d3.zoomTransform(svg.node()).k;
-  root.selectAll('g.labels text.lbl').attr('display', d => {
+  const k = scale();  // label text and halo stay 10 and 3 screen pixels whatever the zoom
+  const labels = root.selectAll('g.labels text.lbl').style('font-size', `${10 / k}px`).style('stroke-width', `${3 / k}px`);
+  labels.attr('display', d => {
     const inFocus = d.id === selectedId || (focusKeep && focusKeep.has(d.id));
     const dag = d.type === 'dag' && (SMALL || d.down >= 5 || failing(d) || k >= ZOOM_LABELS);
     return inFocus || dag ? null : 'none';
   });
+  placeLabels(labels);
 }
 
 function facts(d) {
@@ -448,12 +453,22 @@ function applyHighlight() {
   updateLabels();
 }
 
+function fitBox(x0, x1, y0, y1, single) {
+  const pad = 60, k = Math.max(0.15, Math.min(single ? 1.6 : 2, (W() - 2 * pad) / Math.max(x1 - x0, 1), (H() - 2 * pad) / Math.max(y1 - y0, 1)));
+  svg.transition().duration(400).call(zoom.transform, d3.zoomIdentity.translate(W() / 2 - k * (x0 + x1) / 2, H() / 2 - k * (y0 + y1) / 2).scale(k));
+}
+// Fit to the given nodes, min to max (a search focuses on these exact nodes).
 function fitTo(ids) {
   const ns = ids.map(i => nodeMap.get(i)).filter(n => n && n.x != null);
   if (!ns.length) return;
-  const x0 = d3.min(ns, n => n.x), x1 = d3.max(ns, n => n.x), y0 = d3.min(ns, n => n.y), y1 = d3.max(ns, n => n.y), pad = 60;
-  const k = Math.max(0.15, Math.min(ns.length === 1 ? 1.6 : 2, (W() - 2 * pad) / Math.max(x1 - x0, 1), (H() - 2 * pad) / Math.max(y1 - y0, 1)));
-  svg.transition().duration(400).call(zoom.transform, d3.zoomIdentity.translate(W() / 2 - k * (x0 + x1) / 2, H() / 2 - k * (y0 + y1) / 2).scale(k));
+  fitBox(d3.min(ns, n => n.x), d3.max(ns, n => n.x), d3.min(ns, n => n.y), d3.max(ns, n => n.y), ns.length === 1);
+}
+// Fit to all shown nodes, ignoring the outer 2% on each side so far-off small components do not shrink the graph.
+function fitAll() {
+  const ns = nodes.filter(n => n.x != null);
+  if (!ns.length) return;
+  const xs = ns.map(n => n.x).sort(d3.ascending), ys = ns.map(n => n.y).sort(d3.ascending);
+  fitBox(d3.quantile(xs, .02), d3.quantile(xs, .98), d3.quantile(ys, .02), d3.quantile(ys, .98), ns.length === 1);
 }
 
 const SEARCH_RE = /__SEARCH_RE__/;
@@ -474,6 +489,7 @@ function parseQuery(raw) {
 function runSearch(fit) {
   const p = parseQuery(qEl.value);
   selectedId = null; searchKeep = null; lastTargets = [];
+  pendingFit = false; initialSearch = false;  // the search takes the view
   if (!p) { renderSide(null); applyHighlight(); return; }
   if (!p.plus) {
     // Visible nodes first; a match hidden by the filters still opens, with a way to show it.
@@ -512,9 +528,9 @@ function syncHash() {  // keep the URL fragment in step with the toggles and the
 qEl.addEventListener('input', () => { runSearch(true); syncHash(); });
 ['hideAssets', 'onlyFail', 'onlyLinked', 'onlyActive', 'onlyTags', 'conn'].forEach(id => box(id).addEventListener('change', () => { buildView(); syncHash(); }));
 // Switching "only linked" off adds the grid below the graph: zoom out so it is in view.
-box('onlyLinked').addEventListener('change', () => { if (!box('onlyLinked').checked) setTimeout(() => fitTo([...nodeMap.keys()]), 900); });
+box('onlyLinked').addEventListener('change', () => { if (!box('onlyLinked').checked) setTimeout(fitAll, 900); });
 box('hl').addEventListener('change', () => { applyHighlight(); syncHash(); });
-box('fit').addEventListener('click', () => fitTo(nodes.map(n => n.id)));
+box('fit').addEventListener('click', () => fitAll());
 box('showGuards').addEventListener('change', () => { buildAdj(); buildView(); if (selectedId) renderSide(byId.get(selectedId)); syncHash(); });
 svg.on('click', ev => { if (ev.target === svg.node()) { selectedId = null; searchKeep = null; renderSide(null); applyHighlight(); } });
 if (window.matchMedia) {
@@ -542,7 +558,8 @@ if (qf) {
   try { text = decodeURIComponent(text); } catch (e) { /* keep raw */ }
   qEl.value = text;
   runSearch(false);
-  setTimeout(() => fitTo(lastTargets), 1200);
+  initialSearch = true; pendingFit = true;  // the layout end fits to this search
+  setTimeout(() => { if (initialSearch) fitTo(lastTargets); }, 1200);
 }
 </script>
 </body>
