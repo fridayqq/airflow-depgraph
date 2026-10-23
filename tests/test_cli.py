@@ -331,7 +331,48 @@ def test_guards_need_include_guards(inferred_file, capsys):
     assert cli.main(["upstream", "dag_y_cron", inferred_file]) == 1
     capsys.readouterr()
     assert cli.main(["upstream", "dag_y_cron", inferred_file, "--include-guards"]) == 0
-    assert "via sensor:guard_a (inferred)" in capsys.readouterr().out
+    assert "via sensor:guard_a (guard)" in capsys.readouterr().out
+
+
+def test_guard_hop_json_keeps_inferred_label(inferred_file, capsys):
+    assert cli.main(["upstream", "dag_y_cron", inferred_file, "--include-guards", "--json"]) == 0
+    dags = json.loads(capsys.readouterr().out)["dags"]
+    assert [d["via"] for d in dags] == ["sensor:guard_a (inferred)"]
+
+
+def test_normal_inferred_hop_keeps_inferred_marker(inferred_file, capsys):
+    assert cli.main(["downstream", "dag_i", inferred_file]) == 0
+    out = capsys.readouterr().out
+    assert "via sensor:wait_i (inferred)" in out and "(guard)" not in out
+
+
+def test_version_flag_prints_package_version(capsys):
+    from airflow_depgraph import __version__
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--version"])
+    assert exc.value.code == 0
+    assert capsys.readouterr().out == f"airflow-depgraph {__version__}\n"
+
+
+@pytest.mark.parametrize("command", ["fetch", "render", "graph", "downstream", "upstream",
+                                     "tasks", "presets"])
+def test_every_subcommand_help_has_examples(command, capsys):
+    with pytest.raises(SystemExit) as exc:
+        cli.main([command, "--help"])
+    assert exc.value.code == 0
+    assert "Example" in capsys.readouterr().out
+
+
+def test_strip_prefix_shortens_asset_label_in_text_only(tmp_path, monkeypatch, capsys):
+    d = tmp_path / "presets"
+    d.mkdir()
+    (d / "team.toml").write_text('asset_label_strip_prefix = "team-"\n')
+    monkeypatch.setenv("AIRFLOW_DEPGRAPH_PRESETS", str(d))
+    assert cli.main(["downstream", "dag_a", FIX, "--preset", "team"]) == 0
+    out = capsys.readouterr().out
+    assert "via asset:orders" in out and "via asset:team-" not in out
+    assert cli.main(["downstream", "dag_a", FIX, "--preset", "team", "--json"]) == 0
+    assert '"via": "asset:team-orders"' in capsys.readouterr().out
 
 
 def test_fetch_infer_sensors_fills_inferred(tmp_path, live, monkeypatch, capsys):

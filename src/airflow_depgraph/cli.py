@@ -12,6 +12,7 @@ import sys
 from importlib import resources
 from pathlib import Path
 
+from airflow_depgraph import __version__
 from airflow_depgraph import snapshot as snapmod
 from airflow_depgraph.auth import CredentialsError, resolve_password, resolve_user
 from airflow_depgraph.cli_format import TITLES, format_hits, hits_json, stamp
@@ -306,7 +307,8 @@ def _query(args: argparse.Namespace, direction: str) -> int:
         print(hits_json(dag, direction, args.depth, hits, info, regex is not None))
     else:
         header = f"{TITLES[direction]} of {dag} — {len(hits)} (depth ≤ {args.depth}, {stamp(snap if args.snapshot else None)})"
-        print(format_hits(hits, info, snap.source or s.url, direction, header))
+        print(format_hits(hits, info, snap.source or s.url, direction, header,
+                          strip_prefix=s.asset_label_strip_prefix))
     return 0
 
 
@@ -380,25 +382,57 @@ def _parser() -> argparse.ArgumentParser:
 
     p = argparse.ArgumentParser(prog="airflow-depgraph",
                                 description="Airflow 3 cross-DAG dependency graph")
+    p.add_argument("--version", action="version", version=f"airflow-depgraph {__version__}")
     sub = p.add_subparsers(dest="command", required=True)
 
-    f = sub.add_parser("fetch", parents=[common, fetch_opts, tag_opts], help="save a snapshot")
-    f.add_argument("-o", "--output", default=DEFAULT_SNAPSHOT)
+    def add(name: str, *, parents: list, help: str, description: str,
+            examples: list[str]) -> argparse.ArgumentParser:
+        return sub.add_parser(
+            name, parents=parents, help=help, description=description,
+            epilog="Examples:\n" + "\n".join(f"  {e}" for e in examples),
+            formatter_class=argparse.RawDescriptionHelpFormatter)
+
+    f = add("fetch", parents=[common, fetch_opts, tag_opts],
+            help="save a snapshot of the graph to a JSON file",
+            description="Fetch the dependency graph from Airflow and save it as a snapshot JSON "
+                        "file. downstream, upstream, render and tasks can then work offline.",
+            examples=["airflow-depgraph fetch --url https://airflow.example.com -o graph.json",
+                      "airflow-depgraph fetch --preset work --with-status --infer-sensors"])
+    f.add_argument("-o", "--output", default=DEFAULT_SNAPSHOT,
+                   help=f"snapshot file to write (default {DEFAULT_SNAPSHOT})")
     f.set_defaults(func=cmd_fetch)
 
-    r = sub.add_parser("render", parents=[common, render_opts, tag_opts], help="render a snapshot to HTML")
-    r.add_argument("snapshot")
-    r.add_argument("-o", "--output", default=DEFAULT_HTML)
+    r = add("render", parents=[common, render_opts, tag_opts],
+            help="render a snapshot file to an HTML page",
+            description="Render a snapshot saved by fetch as a self-contained HTML page. "
+                        "No Airflow connection is needed.",
+            examples=["airflow-depgraph render graph.json -o graph.html",
+                      "airflow-depgraph render graph.json --title 'Prod graph' --tag team-a"])
+    r.add_argument("snapshot", help="snapshot JSON file written by fetch")
+    r.add_argument("-o", "--output", default=DEFAULT_HTML,
+                   help=f"HTML file to write (default {DEFAULT_HTML})")
     r.set_defaults(func=cmd_render)
 
-    g = sub.add_parser("graph", parents=[common, fetch_opts, render_opts, tag_opts],
-                       help="fetch live and write HTML plus JSON")
-    g.add_argument("-o", "--output", default=DEFAULT_HTML)
+    g = add("graph", parents=[common, fetch_opts, render_opts, tag_opts],
+            help="fetch live and write an HTML page plus its JSON snapshot",
+            description="Fetch the graph from Airflow and write an HTML page. The JSON snapshot "
+                        "goes next to it with a .json suffix.",
+            examples=["airflow-depgraph graph --preset work -o graph.html",
+                      "airflow-depgraph graph --url https://airflow.example.com --with-status"])
+    g.add_argument("-o", "--output", default=DEFAULT_HTML,
+                   help="HTML file to write; the snapshot goes next to it with a .json suffix "
+                        f"(default {DEFAULT_HTML})")
     g.set_defaults(func=cmd_graph)
 
     for name in ("downstream", "upstream"):
-        q = sub.add_parser(name, parents=[common], help=f"list {name} DAGs")
-        q.add_argument("dag")
+        what = "waits for" if name == "upstream" else "is triggered or waited on by"
+        q = add(name, parents=[common], help=f"list {name} DAGs",
+                description=f"List the DAGs that {name} of DAG, up to --depth hops: the DAGs "
+                            f"this DAG {what}. Reads a snapshot file if given, otherwise "
+                            "queries Airflow live.",
+                examples=[f"airflow-depgraph {name} dag_a graph.json",
+                          f"airflow-depgraph {name} dag_a --depth 2 --json --preset work"])
+        q.add_argument("dag", help="DAG id, with or without the dag: prefix")
         q.add_argument("snapshot", nargs="?", help="snapshot file; omit to query live")
         q.add_argument("--depth", type=_depth, default=5, help="maximum DAG hops, at least 1 (default 5)")
         q.add_argument("--json", action="store_true", help="print machine-readable JSON")
@@ -412,14 +446,23 @@ def _parser() -> argparse.ArgumentParser:
                        help="also follow inferred deploy guards (sensors waiting for a DAG not to run)")
         q.set_defaults(func=lambda a, d=name: _query(a, d))
 
-    t = sub.add_parser("tasks", parents=[common], help="list the tasks of a DAG")
-    t.add_argument("dag")
-    t.add_argument("snapshot", nargs="?")
-    t.add_argument("--regex")
+    t = add("tasks", parents=[common], help="list the task ids of a DAG",
+            description="Print the task ids of one DAG, from a snapshot made with --with-tasks "
+                        "or live from Airflow.",
+            examples=["airflow-depgraph tasks dag_a graph.json --regex refresh",
+                      "airflow-depgraph tasks dag_a --json --preset work"])
+    t.add_argument("dag", help="DAG id, with or without the dag: prefix")
+    t.add_argument("snapshot", nargs="?", help="snapshot file; omit to query live")
+    t.add_argument("--regex", help="keep only task ids matching this regex")
     t.add_argument("--json", action="store_true", help="print a JSON list")
     t.set_defaults(func=cmd_tasks)
 
-    pr = sub.add_parser("presets", parents=[common], help="list presets")
+    pr = add("presets", parents=[common], help="list presets, or show one resolved",
+             description="List the presets found in the preset directories. With --preset, also "
+                         "show its resolved settings; the token is never shown.",
+             examples=["airflow-depgraph presets",
+                       "airflow-depgraph presets --preset work",
+                       "airflow-depgraph presets --example"])
     pr.add_argument("--example", action="store_true", help="print the example preset")
     pr.set_defaults(func=cmd_presets)
     return p

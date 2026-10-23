@@ -13,6 +13,7 @@ class Node:
     label: str
     type: str
     inferred: bool = False
+    guard: bool = False
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,7 @@ class Hit:
     dag_id: str
     hops: int
     via: str | None
+    guard: bool = False  # the hop goes through an inferred deploy guard
 
 
 @dataclass
@@ -33,7 +35,8 @@ class Graph:
     def from_payload(cls, nodes: list[dict], edges: list[dict]) -> Graph:
         g = cls()
         for n in nodes:
-            node = Node(id=n["id"], label=n["label"], type=n["type"], inferred=bool(n.get("inferred")))
+            node = Node(id=n["id"], label=n["label"], type=n["type"], inferred=bool(n.get("inferred")),
+                        guard=n.get("kind") == "guard")
             g.nodes[node.id] = node
             g.out.setdefault(node.id, [])
             g.inc.setdefault(node.id, [])
@@ -70,23 +73,24 @@ def walk(g: Graph, start: str, direction: Direction, depth: int = 5) -> list[Hit
     hops = 0
 
     while frontier and hops < depth:
-        found: dict[str, str | None] = {}
-        queue: deque[tuple[str, str | None]] = deque((d, None) for d in frontier)
+        found: dict[str, tuple[str | None, bool]] = {}
+        queue: deque[tuple[str, str | None, bool]] = deque((d, None, False) for d in frontier)
         while queue:
-            current, via = queue.popleft()
+            current, via, guard = queue.popleft()
             for nxt in _neighbours(g, current, direction):
                 if _is_dag(g, nxt):
                     if nxt not in seen_dags and nxt not in found:
-                        found[nxt] = via
+                        found[nxt] = (via, guard)
                 elif nxt not in visited_links:
                     visited_links.add(nxt)
-                    queue.append((nxt, _link_label(g, nxt)))
+                    queue.append((nxt, _link_label(g, nxt), g.nodes[nxt].guard))
 
         hops += 1
         next_frontier = []
         for dag_node in sorted(found):
             seen_dags.add(dag_node)
-            hits.append(Hit(dag_id=dag_node.removeprefix("dag:"), hops=hops, via=found[dag_node]))
+            via, guard = found[dag_node]
+            hits.append(Hit(dag_id=dag_node.removeprefix("dag:"), hops=hops, via=via, guard=guard))
             next_frontier.append(dag_node)
         frontier = next_frontier
 

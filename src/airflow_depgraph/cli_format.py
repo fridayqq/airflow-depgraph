@@ -14,14 +14,27 @@ TITLES = {
 ARROWS = {"downstream": "→", "upstream": "←"}
 
 
+def _text_via(hit: Hit, strip_prefix: str | None) -> str:
+    """The hop label for text output: asset prefix stripped, guard hops marked as (guard)."""
+    if hit.via is None:
+        return "—"
+    via = hit.via
+    if strip_prefix and via.startswith("asset:"):
+        via = "asset:" + via[len("asset:"):].removeprefix(strip_prefix)
+    if hit.guard:
+        via = via.removesuffix(" (inferred)") + " (guard)"
+    return via
+
+
 def format_hits(hits: list[Hit], info: dict[str, dict], url: str | None,
-                direction: str, header: str) -> str:
+                direction: str, header: str, strip_prefix: str | None = None) -> str:
     lines = [header]
     for h in hits:
         d = info.get(h.dag_id) or {}
         paused = " ⏸ paused" if d.get("is_paused") else ""
         sched = d.get("schedule") or "—"
-        lines.append(f"  {ARROWS[direction]}{h.hops} {h.dag_id:<48} via {h.via or '—'}{paused}  sched: {sched}")
+        lines.append(f"  {ARROWS[direction]}{h.hops} {h.dag_id:<48} via {_text_via(h, strip_prefix)}"
+                     f"{paused}  sched: {sched}")
         if url:
             lines.append(f"        {url.rstrip('/')}/dags/{h.dag_id}")
         if d.get("matching_tasks"):
