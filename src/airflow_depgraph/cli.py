@@ -40,7 +40,7 @@ class CliError(Exception):
 def _settings(args: argparse.Namespace) -> Settings:
     cli = {k: getattr(args, k, None)
            for k in ("url", "user", "token", "with_status", "with_tasks", "title", "highlight",
-                     "infer_sensors")}
+                     "infer_sensors", "timeout", "workers")}
     if getattr(args, "tags", None):
         cli["tags"] = tuple(args.tags)
     return resolve(cli, os.environ, args.preset)
@@ -50,11 +50,11 @@ def _client(s: Settings, args: argparse.Namespace) -> AirflowClient:
     if not s.url:
         raise CliError("no Airflow URL: pass --url, set AIRFLOW_DEPGRAPH_URL or use a preset")
     if s.token:
-        return AirflowClient(s.url, token=s.token)
+        return AirflowClient(s.url, token=s.token, timeout=s.timeout)
     user = resolve_user(s, os.environ)
     password = resolve_password(s, os.environ, stdin_password=args.password_stdin,
                                 stdin=sys.stdin, isatty=sys.stdin.isatty())
-    return AirflowClient.login(s.url, user, password)
+    return AirflowClient.login(s.url, user, password, timeout=s.timeout)
 
 
 def _live_snapshot(client: AirflowClient, s: Settings, node_id: str | None) -> Snapshot:
@@ -117,7 +117,7 @@ def _fetch_dags(client: AirflowClient, snap: Snapshot, s: Settings,
         def progress(msg: str) -> None:
             print(f"fetching status {msg.split()[0]}", file=sys.stderr)
         result = fetch_status(client, ids, s, with_tasks=s.with_tasks, progress=progress,
-                              catalog=snap.catalog)
+                              catalog=snap.catalog, workers=s.workers)
         errors = [result[d]["error"] for d in ids if "error" in result.get(d, {})]
         if errors:
             print(f"warning: status unavailable for {len(errors)} of {len(ids)} DAGs "
@@ -132,7 +132,7 @@ def _fetch_dags(client: AirflowClient, snap: Snapshot, s: Settings,
         tasks_by_dag = dict(tasks_by_dag or {})
         missing = [d for d in ids if d not in tasks_by_dag]
         if missing:
-            tasks_by_dag.update(fetch_tasks(client, missing))
+            tasks_by_dag.update(fetch_tasks(client, missing, workers=s.workers))
         unreadable = [d for d in ids if tasks_by_dag.get(d) is None]
         if unreadable:
             print(f"warning: task list unavailable for {len(unreadable)} DAGs", file=sys.stderr)
@@ -142,7 +142,8 @@ def _fetch_dags(client: AirflowClient, snap: Snapshot, s: Settings,
     return None
 
 
-def _infer(client: AirflowClient, snap: Snapshot) -> tuple[list[dict], dict[str, list[dict] | None]]:
+def _infer(client: AirflowClient, snap: Snapshot,
+           s: Settings) -> tuple[list[dict], dict[str, list[dict] | None]]:
     """Sensors of every catalog DAG (graph DAGs without a catalog) that wait on another DAG.
     Also returns the task lists it read, so --with-tasks can reuse them."""
     if snap.catalog is not None:
@@ -150,11 +151,11 @@ def _infer(client: AirflowClient, snap: Snapshot) -> tuple[list[dict], dict[str,
     else:
         ids = snap.graph_for(inferred=False).dag_ids
     print(f"inferring sensors: reading the tasks of {len(ids)} DAGs", file=sys.stderr)
-    tasks = fetch_tasks(client, ids)
+    tasks = fetch_tasks(client, ids, workers=s.workers)
 
     def progress(msg: str) -> None:
         print(f"inferring sensors {msg.split()[0]}", file=sys.stderr)
-    return infer_sensor_edges(client, ids, tasks, progress=progress), tasks
+    return infer_sensor_edges(client, ids, tasks, workers=s.workers, progress=progress), tasks
 
 
 def _fetch_snapshot(args: argparse.Namespace, s: Settings) -> Snapshot:
@@ -162,7 +163,7 @@ def _fetch_snapshot(args: argparse.Namespace, s: Settings) -> Snapshot:
     snap = _live_snapshot(client, s, args.node_id)
     tasks = None
     if s.infer_sensors and not args.node_id:
-        snap.inferred, tasks = _infer(client, snap)
+        snap.inferred, tasks = _infer(client, snap, s)
     snap.dags = _fetch_dags(client, snap, s, tasks)
     return snap
 
@@ -366,7 +367,7 @@ def _query(args: argparse.Namespace, direction: str) -> int:
         client = _client(s, args)
         snap = _live_snapshot(client, s, None)
         if s.infer_sensors:
-            snap.inferred, _ = _infer(client, snap)
+            snap.inferred, _ = _infer(client, snap, s)
     dag = args.dag.removeprefix("dag:")
     hits = _walk(snap, dag, direction, args.depth,
                  inferred=not args.no_inferred, guards=args.include_guards)
@@ -375,7 +376,7 @@ def _query(args: argparse.Namespace, direction: str) -> int:
     info = {h.dag_id: _dag_info(client, snap, h.dag_id) for h in hits}
     if client is not None and hits:  # live: last run status of the hit DAGs only
         status = fetch_status(client, [h.dag_id for h in hits], s, with_tasks=False,
-                              catalog=snap.catalog)
+                              catalog=snap.catalog, workers=s.workers)
         for h in hits:
             info[h.dag_id]["last_run"] = (status.get(h.dag_id) or {}).get("last_run")
     if regex:
@@ -441,6 +442,12 @@ def _parser() -> argparse.ArgumentParser:
     common.add_argument("--password-stdin", action="store_true", help="read the password from stdin")
     common.add_argument("--token", help="bearer token (skips login)")
 
+    net_opts = argparse.ArgumentParser(add_help=False)
+    net_opts.add_argument("--timeout", type=float, default=None, metavar="SECONDS",
+                          help="seconds to wait for one API request, retries excluded (default 25)")
+    net_opts.add_argument("--workers", type=int, default=None, metavar="N",
+                          help="parallel API requests for status, task lists and sensors (default 8)")
+
     fetch_opts = argparse.ArgumentParser(add_help=False)
     fetch_opts.add_argument("--with-status", action="store_true", default=None,
                             help="also fetch the latest run status of every DAG")
@@ -473,7 +480,7 @@ def _parser() -> argparse.ArgumentParser:
             epilog="Examples:\n" + "\n".join(f"  {e}" for e in examples),
             formatter_class=argparse.RawDescriptionHelpFormatter)
 
-    f = add("fetch", parents=[common, fetch_opts, tag_opts],
+    f = add("fetch", parents=[common, net_opts, fetch_opts, tag_opts],
             help="save a snapshot of the graph to a JSON file",
             description="Fetch the dependency graph from Airflow and save it as a snapshot JSON "
                         "file. downstream, upstream, render and tasks can then work offline.",
@@ -494,7 +501,7 @@ def _parser() -> argparse.ArgumentParser:
                    help=f"HTML file to write (default {DEFAULT_HTML})")
     r.set_defaults(func=cmd_render)
 
-    g = add("graph", parents=[common, fetch_opts, render_opts, tag_opts],
+    g = add("graph", parents=[common, net_opts, fetch_opts, render_opts, tag_opts],
             help="fetch live and write an HTML page plus its JSON snapshot",
             description="Fetch the graph from Airflow and write an HTML page. The JSON snapshot "
                         "goes next to it with a .json suffix.",
@@ -507,7 +514,7 @@ def _parser() -> argparse.ArgumentParser:
 
     for name in ("downstream", "upstream"):
         meaning = "what depends on it" if name == "downstream" else "what it waits for"
-        q = add(name, parents=[common], help=f"list {name} DAGs",
+        q = add(name, parents=[common, net_opts], help=f"list {name} DAGs",
                 description=f"List the DAGs {name} of DAG ({meaning}), up to --depth hops. "
                             "Reads a snapshot file if given, otherwise queries Airflow live.",
                 examples=[f"airflow-depgraph {name} dag_a graph.json",
@@ -528,7 +535,7 @@ def _parser() -> argparse.ArgumentParser:
                        help="also follow inferred deploy guards (sensors waiting for a DAG not to run)")
         q.set_defaults(func=lambda a, d=name: _query(a, d))
 
-    t = add("tasks", parents=[common], help="list the task ids of a DAG",
+    t = add("tasks", parents=[common, net_opts], help="list the task ids of a DAG",
             description="Print the task ids of one DAG, from a snapshot made with --with-tasks "
                         "or live from Airflow.",
             examples=["airflow-depgraph tasks dag_a graph.json --regex refresh",
@@ -539,7 +546,7 @@ def _parser() -> argparse.ArgumentParser:
     t.add_argument("--json", action="store_true", help="print a JSON list")
     t.set_defaults(func=cmd_tasks)
 
-    rp = add("report", parents=[common], help="critical, unlinked, unconsumed-assets or failing DAGs",
+    rp = add("report", parents=[common, net_opts], help="critical, unlinked, unconsumed-assets or failing DAGs",
              description="Reports over a snapshot file: critical (DAGs with the most downstream "
                          "DAGs), unlinked (DAGs with no links), unconsumed-assets (assets nobody "
                          "reads) and failing (DAGs whose last run failed). Works offline.",

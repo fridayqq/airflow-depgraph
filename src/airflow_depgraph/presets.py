@@ -37,6 +37,8 @@ class Settings:
     tags: tuple[str, ...] = ()
     infer_sensors: bool = False
     infer_interval_minutes: int = 30
+    timeout: float = 25             # seconds per API request
+    workers: int = 8                # parallel API requests (status, task lists, sensors)
     preset_name: str | None = None
 
 
@@ -112,9 +114,16 @@ def _coerce(field: str, value: object) -> object:
                 return int(value)
             except ValueError:
                 raise PresetError(f"{field} must be an integer, got {value!r}") from None
+        if ftype == "float":
+            try:
+                return float(value)
+            except ValueError:
+                raise PresetError(f"{field} must be a number, got {value!r}") from None
         return value
     if ftype == "int" and (isinstance(value, bool) or not isinstance(value, int)):
         raise PresetError(f"{field} must be an integer, got {value!r}")
+    if ftype == "float" and isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
     return value
 
 
@@ -141,4 +150,9 @@ def resolve(cli: Mapping[str, object], env: Mapping[str, str], preset: str | Non
             if field == "tags" and not isinstance(from_file[field], list):
                 raise PresetError(f"tags must be a list of strings, got {from_file[field]!r}")
             values[field] = _coerce(field, from_file[field])
-    return Settings(**values)
+    settings = Settings(**values)
+    if settings.timeout <= 0:
+        raise PresetError(f"timeout must be greater than 0, got {settings.timeout:g}")
+    if settings.workers < 1:
+        raise PresetError(f"workers must be at least 1, got {settings.workers}")
+    return settings

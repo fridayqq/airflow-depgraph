@@ -167,3 +167,30 @@ def test_tags_must_be_list_of_strings(tmp_path, value):
     f = write(tmp_path / "p.toml", f"tags = {value}\n")
     with pytest.raises(PresetError, match="tags"):
         resolve({}, {}, str(f))
+
+
+def test_timeout_and_workers_defaults():
+    s = resolve({}, {}, None)
+    assert s.timeout == 25 and s.workers == 8
+
+
+def test_timeout_and_workers_precedence(tmp_path):
+    preset = write(tmp_path / "p.toml", "timeout = 30\nworkers = 4\n")
+    env = {"AIRFLOW_DEPGRAPH_TIMEOUT": "40", "AIRFLOW_DEPGRAPH_WORKERS": "6"}
+    s = resolve({}, {}, str(preset))
+    assert (s.timeout, s.workers) == (30, 4)
+    s = resolve({}, env, str(preset))
+    assert (s.timeout, s.workers) == (40, 6)
+    s = resolve({"timeout": 5.0, "workers": 2}, env, str(preset))
+    assert (s.timeout, s.workers) == (5, 2)
+
+
+@pytest.mark.parametrize("env", [
+    {"AIRFLOW_DEPGRAPH_TIMEOUT": "soon"},
+    {"AIRFLOW_DEPGRAPH_TIMEOUT": "0"},
+    {"AIRFLOW_DEPGRAPH_WORKERS": "0"},
+    {"AIRFLOW_DEPGRAPH_WORKERS": "many"},
+])
+def test_timeout_and_workers_are_validated(env):
+    with pytest.raises(PresetError):
+        resolve({}, env, None)

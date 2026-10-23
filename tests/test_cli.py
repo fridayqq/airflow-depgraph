@@ -30,11 +30,11 @@ class FakeClient:
         ],
     }
 
-    def __init__(self, url, token=None):
+    def __init__(self, url, token=None, timeout=None):
         self.url, self.token = url, token
 
     @classmethod
-    def login(cls, url, user, password):
+    def login(cls, url, user, password, timeout=None):
         return cls(url, token="tok")
 
     def dependencies(self, node_id=None):
@@ -697,3 +697,34 @@ def test_live_upstream_queries_status_only_for_hit_dags(live, monkeypatch, capsy
     monkeypatch.setattr(cli, "AirflowClient", CountingClient)
     assert cli.main(["upstream", "y", "--url", URL]) == 0
     assert calls == ["x"]
+
+
+@pytest.mark.parametrize("command", ["fetch", "graph", "downstream", "upstream", "tasks", "report"])
+def test_timeout_and_workers_flags_are_accepted(command):
+    extra = ["critical", "snap.json"] if command == "report" else (
+        ["dag_a"] if command in ("downstream", "upstream", "tasks") else [])
+    args = cli._parser().parse_args([command, *extra, "--timeout", "5", "--workers", "3"])
+    s = cli._settings(args)
+    assert (s.timeout, s.workers) == (5, 3)
+
+
+def test_timeout_and_workers_env_reach_settings_without_flags(monkeypatch):
+    monkeypatch.setenv("AIRFLOW_DEPGRAPH_TIMEOUT", "40")
+    monkeypatch.setenv("AIRFLOW_DEPGRAPH_WORKERS", "9")
+    s = cli._settings(cli._parser().parse_args(["fetch"]))
+    assert (s.timeout, s.workers) == (40, 9)
+
+
+def test_client_gets_the_timeout_setting(monkeypatch):
+    seen = {}
+
+    class Recorder(FakeClient):
+        def __init__(self, url, token=None, timeout=None, **kw):
+            seen["timeout"] = timeout
+            super().__init__(url, token=token)
+
+    monkeypatch.setattr(cli, "AirflowClient", Recorder)
+    monkeypatch.setenv("AIRFLOW_DEPGRAPH_TIMEOUT", "12")
+    args = cli._parser().parse_args(["downstream", "dag_a", "--url", URL, "--token", "t"])
+    cli._client(cli._settings(args), args)
+    assert seen["timeout"] == 12

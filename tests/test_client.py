@@ -4,7 +4,12 @@ import urllib.error
 import pytest
 
 from airflow_depgraph.client import AirflowClient, ApiError
-from tests.conftest import fake_opener
+import http.server
+import threading
+
+from airflow_depgraph import __version__
+from airflow_depgraph import client as client_mod
+from tests.conftest import _Resp, fake_opener
 
 URL = "https://airflow.example.com"
 
@@ -43,7 +48,9 @@ def test_other_http_error():
     assert ei.value.status == 500 and ei.value.path == "/api/v2/dags/x"
 
 
-def test_urlerror_becomes_apierror():
+def test_urlerror_becomes_apierror(monkeypatch):
+    monkeypatch.setattr(client_mod.time, "sleep", lambda s: None)
+
     def op(req, timeout=None):
         raise urllib.error.URLError("dns")
 
@@ -97,7 +104,8 @@ def test_non_json_body_is_api_error():
         c.dependencies()
 
 
-def test_timeout_and_os_error_are_api_errors():
+def test_timeout_and_os_error_are_api_errors(monkeypatch):
+    monkeypatch.setattr(client_mod.time, "sleep", lambda s: None)
     with pytest.raises(ApiError, match="timed out"):
         AirflowClient(URL, "t", opener=_raw_opener(exc=TimeoutError())).dependencies()
     with pytest.raises(ApiError, match="network error"):
@@ -204,3 +212,150 @@ def test_task_instances_keeps_mapped_instances_sharing_one_task_id():
     out = AirflowClient(URL, "t", opener=opener).task_instances("d", "r")
     assert len(out) == 150
     assert calls == [0, 100, 150]
+
+
+def scripted_opener(*outcomes):
+    """Each call pops one outcome: an exception to raise, or a JSON value to return."""
+    queue, calls = list(outcomes), []
+
+    def opener(req, timeout=None):
+        calls.append(req)
+        item = queue.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return _Resp(json.dumps(item).encode())
+
+    opener.calls = calls
+    return opener
+
+
+def _http_error(code, headers=None):
+    return urllib.error.HTTPError(URL + "/x", code, "reason", headers or {}, None)
+
+
+@pytest.fixture
+def sleeps(monkeypatch):
+    seen = []
+    monkeypatch.setattr(client_mod.time, "sleep", seen.append)
+    return seen
+
+
+def test_503_is_retried_then_succeeds(sleeps):
+    op = scripted_opener(_http_error(503), {"nodes": []})
+    assert AirflowClient(URL, "t", opener=op).dependencies() == {"nodes": []}
+    assert len(op.calls) == 2
+    assert sleeps == [1]
+
+
+def test_404_is_not_retried(sleeps):
+    op = scripted_opener(_http_error(404), {"nodes": []})
+    with pytest.raises(ApiError, match="404"):
+        AirflowClient(URL, "t", opener=op).dependencies()
+    assert len(op.calls) == 1 and sleeps == []
+
+
+def test_retry_after_header_is_honoured(sleeps):
+    op = scripted_opener(_http_error(503, {"Retry-After": "2"}), {"nodes": []})
+    AirflowClient(URL, "t", opener=op).dependencies()
+    assert sleeps == [2]
+
+
+def test_retry_after_is_capped_at_30_seconds(sleeps):
+    op = scripted_opener(_http_error(429, {"Retry-After": "120"}), {"nodes": []})
+    AirflowClient(URL, "t", opener=op).dependencies()
+    assert sleeps == [30]
+
+
+def test_gives_up_after_two_retries_with_last_status(sleeps):
+    op = scripted_opener(_http_error(429), _http_error(429), _http_error(502))
+    with pytest.raises(ApiError) as ei:
+        AirflowClient(URL, "t", opener=op).dependencies()
+    assert ei.value.status == 502
+    assert len(op.calls) == 3 and sleeps == [1, 3]
+
+
+def test_timeout_is_retried(sleeps):
+    op = scripted_opener(TimeoutError(), {"nodes": []})
+    assert AirflowClient(URL, "t", opener=op).dependencies() == {"nodes": []}
+    assert sleeps == [1]
+
+
+def test_login_post_is_retried_at_most_once(sleeps):
+    op = scripted_opener(_http_error(503), _http_error(503), _http_error(503))
+    with pytest.raises(ApiError):
+        AirflowClient.login(URL, "u", "p", opener=op)
+    assert len(op.calls) == 2 and sleeps == [1]
+
+
+def test_user_agent_is_sent_on_every_request(sleeps):
+    op = fake_opener({"/auth/token": {"access_token": "abc"}, "/ui/dependencies": {"nodes": []}})
+    c = AirflowClient.login(URL, "u", "p", opener=op)
+    c.dependencies()
+    assert len(op.calls) == 2
+    assert all(call["headers"]["user-agent"] == f"airflow-depgraph/{__version__}"
+               for call in op.calls)
+
+
+@pytest.fixture
+def local_server():
+    """A real keep-alive HTTP/1.1 server; records connections and User-Agent headers."""
+    connections, agents = [], []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def setup(self):
+            super().setup()
+            connections.append(self.client_address)
+
+        def do_GET(self):
+            agents.append(self.headers.get("User-Agent"))
+            body = json.dumps({"nodes": [], "path": self.path}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.05}, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}", connections, agents
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+PROXY_VARS = ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy")
+
+
+def test_default_path_reuses_one_connection(local_server, monkeypatch):
+    for var in PROXY_VARS:
+        monkeypatch.delenv(var, raising=False)
+    url, connections, agents = local_server
+    c = AirflowClient(url, "t")
+    assert c.dependencies()["path"] == "/ui/dependencies"
+    c.dependencies()
+    assert c.dag("x")["path"] == "/api/v2/dags/x"
+    assert len(connections) == 1
+    assert agents == [f"airflow-depgraph/{__version__}"] * 3
+
+
+def test_proxy_variable_falls_back_to_urlopen(local_server, monkeypatch):
+    for var in PROXY_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example.com:3128")
+    url, connections, _ = local_server
+    used = []
+
+    def fake_urlopen(req, timeout=None):
+        used.append(req.full_url)
+        return _Resp(b'{"nodes": []}')
+
+    monkeypatch.setattr(client_mod.urllib.request, "urlopen", fake_urlopen)
+    assert AirflowClient(url, "t").dependencies() == {"nodes": []}
+    assert used == [url + "/ui/dependencies"] and connections == []

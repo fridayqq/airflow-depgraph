@@ -52,3 +52,9 @@ name = "example"
 # infer_sensors = false
 # Plugin only: minutes between background refreshes of the inferred sensor links.
 # infer_interval_minutes = 30
+
+# Seconds to wait for one API request before it fails. Timeouts, 429 and 502-504 are retried twice.
+# timeout = 25
+
+# Parallel API requests for run status, task lists and sensor inference.
+# workers = 8
