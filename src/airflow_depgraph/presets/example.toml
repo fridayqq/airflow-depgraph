@@ -39,7 +39,7 @@ name = "example"
 # Matches dbt-test-x, dbt_tasks.dbt-test-x, test_models, run_tests (case-insensitive).
 # tests_task_regex = '(^|[._-])tests?([._-]|$)'
 
-# Default regex for --tasks-matching. Nothing is filtered at load time; all tasks are fetched.
+# Regex used by --tasks-preset. Nothing is filtered at load time; all tasks are fetched.
 # task_query_regex = "^(extract|load)_"
 
 # How many recent runs to look at when computing the status.

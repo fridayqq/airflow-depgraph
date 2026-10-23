@@ -145,6 +145,8 @@ airflow-depgraph downstream my_dag deps.json
 # Only those that have a task matching a regex (snapshot needs --with-tasks)
 airflow-depgraph fetch --with-tasks -o deps.json
 airflow-depgraph downstream my_dag --tasks-matching 'refresh|report' deps.json
+# Or use the preset's task_query_regex instead of a regex on the command line
+airflow-depgraph downstream my_dag --tasks-preset deps.json
 ```
 
 `upstream` works the same way. `--depth N` must be at least 1. `tasks <dag> [snapshot]` lists the tasks of a DAG. If you omit the snapshot argument, `downstream`, `upstream` and `tasks` query the live instance. `--depth N` limits the traversal and `--json` prints machine-readable output.

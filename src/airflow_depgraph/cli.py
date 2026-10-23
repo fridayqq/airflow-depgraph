@@ -235,10 +235,12 @@ def _match_tasks(client, snap, hits, regex, info) -> list[Hit]:
 
 def _query(args: argparse.Namespace, direction: str) -> int:
     s = _settings(args)
+    if args.tasks_matching is not None and args.tasks_preset:
+        raise CliError("use either --tasks-matching REGEX or --tasks-preset")
     pattern = args.tasks_matching
     if pattern == "":
         raise CliError("--tasks-matching needs a non-empty REGEX")
-    if pattern is True:
+    if args.tasks_preset:
         pattern = s.task_query_regex
         if not pattern:
             raise CliError("--tasks-matching needs a REGEX or task_query_regex in the preset")
@@ -356,8 +358,10 @@ def _parser() -> argparse.ArgumentParser:
         q.add_argument("snapshot", nargs="?", help="snapshot file; omit to query live")
         q.add_argument("--depth", type=_depth, default=5, help="maximum DAG hops, at least 1 (default 5)")
         q.add_argument("--json", action="store_true", help="print machine-readable JSON")
-        q.add_argument("--tasks-matching", nargs="?", const=True, metavar="REGEX",
-                       help="keep DAGs having a task matching REGEX (default: preset task_query_regex)")
+        q.add_argument("--tasks-matching", metavar="REGEX",
+                       help="keep DAGs having a task matching REGEX")
+        q.add_argument("--tasks-preset", action="store_true", default=None,
+                       help="keep DAGs having a task matching the preset's task_query_regex")
         q.add_argument("--no-inferred", action="store_true",
                        help="ignore sensor dependencies inferred by fetch --infer-sensors")
         q.add_argument("--include-guards", action="store_true",

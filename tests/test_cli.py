@@ -131,6 +131,27 @@ def test_tasks_matching_offline_with_tasks(capsys):
     assert out["dags"][0]["matching_tasks"] == ["refresh_dashboard"]
 
 
+def test_tasks_preset_offline_uses_preset_regex(tmp_path, capsys):
+    preset = tmp_path / "p.toml"
+    preset.write_text('task_query_regex = "refresh"\n')
+    assert cli.main(["downstream", "dag_e", FIX, "--preset", str(preset),
+                     "--tasks-preset", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["dags"][0]["matching_tasks"] == ["refresh_dashboard"]
+
+
+def test_tasks_matching_requires_a_value(capsys):
+    with pytest.raises(SystemExit) as ei:
+        cli.main(["downstream", "dag_e", FIX, "--tasks-matching"])
+    assert ei.value.code == 2
+
+
+def test_tasks_matching_and_tasks_preset_together_errors(capsys):
+    assert cli.main(["downstream", "dag_e", FIX, "--tasks-matching", "refresh",
+                     "--tasks-preset"]) == 1
+    assert "use either --tasks-matching REGEX or --tasks-preset" in capsys.readouterr().err
+
+
 def test_tasks_matching_text_line(capsys):
     assert cli.main(["downstream", "dag_e", FIX, "--tasks-matching", "refresh"]) == 0
     assert "        tasks: refresh_dashboard" in capsys.readouterr().out
@@ -183,8 +204,8 @@ def test_downstream_live_tasks_matching(live, capsys):
     assert "tasks: refresh_dashboard" in capsys.readouterr().out
 
 
-def test_tasks_matching_without_regex_uses_preset(live, capsys):
-    assert cli.main(["downstream", "x", "--url", URL, "--tasks-matching"]) == 1
+def test_tasks_preset_without_regex_errors(live, capsys):
+    assert cli.main(["downstream", "x", "--url", URL, "--tasks-preset"]) == 1
     assert "task_query_regex" in capsys.readouterr().err
 
 
