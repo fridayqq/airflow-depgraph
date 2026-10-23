@@ -340,6 +340,21 @@ Status needs `--with-status` (or `with_status = true`). For each DAG:
 - A failing DAG is of kind `tests` when every task in state `failed` matches `tests_task_regex`. Otherwise it is a pipeline failure. The regex is configurable because a pipeline task named like `load_test_data` would otherwise count as a test.
 - Tasks in state `upstream_failed` do not count, because they only inherit a failure.
 
+## Reports
+
+`report` answers portfolio questions from a snapshot file, offline:
+
+```bash
+airflow-depgraph report critical graph.json --top 10   # DAGs with the most transitive downstream DAGs
+airflow-depgraph report unlinked graph.json            # active catalog DAGs with no links
+airflow-depgraph report unconsumed-assets graph.json   # assets that have a producer but no consumer
+airflow-depgraph report failing graph.json             # last decisive run failed, not paused
+```
+
+`--tag NAME` (repeatable) keeps rows with those tags; the default is the preset's `tags`, and
+`--all-tags` turns the filter off. `unlinked` needs a catalog and `failing` needs status in the
+snapshot, so fetch with `--with-status` for the failing report. `--json` prints a list instead of a table.
+
 ## Snapshot format
 
 Snapshots are JSON, format 1:

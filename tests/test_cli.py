@@ -644,3 +644,30 @@ def test_tree_shows_parent_structure(capsys):
 def test_tree_and_json_are_mutually_exclusive(capsys):
     assert cli.main(["downstream", "dag_a", FIX, "--tree", "--json"]) == 1
     assert "--tree and --json cannot be used together" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("kind,header", [
+    ("critical", "Critical DAGs (most transitive downstream DAGs) — 4"),
+    ("unlinked", "Unlinked DAGs (no explicit or inferred links) — 2"),
+    ("unconsumed-assets", "Unconsumed assets (produced, never consumed) — 0"),
+    ("failing", "Failing DAGs (last decisive run failed, not paused) — 2"),
+])
+def test_report_header_and_exit_code(kind, header, capsys):
+    extra = ["--top", "4"] if kind == "critical" else []
+    assert cli.main(["report", kind, FIX, *extra]) == 0
+    assert capsys.readouterr().out.startswith(header)
+
+
+def test_report_json_is_a_list(capsys):
+    assert cli.main(["report", "failing", FIX, "--json"]) == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert [r["dag_id"] for r in rows] == ["dag_a", "dag_d"]
+
+
+def test_report_unlinked_without_catalog_exits_1(tmp_path, capsys):
+    from dataclasses import replace
+    from airflow_depgraph import snapshot as snapmod
+    path = tmp_path / "nocat.json"
+    snapmod.dump(replace(snapmod.load(Path(FIX)), catalog=None), path)
+    assert cli.main(["report", "unlinked", str(path)]) == 1
+    assert "snapshot has no catalog" in capsys.readouterr().err

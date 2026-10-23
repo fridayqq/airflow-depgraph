@@ -37,6 +37,7 @@ escaping.
    - `airflow-depgraph downstream DAG deps.json [--depth N] [--json]`
    - `airflow-depgraph upstream DAG deps.json`
    - `airflow-depgraph downstream DAG deps.json --tasks-matching 'refresh|report'`
+   - `airflow-depgraph report critical|unlinked|unconsumed-assets|failing deps.json [--json]`
 5. **Render and open:** `airflow-depgraph render deps.json [--preset NAME] -o graph.html`, then
    `open "file:///absolute/path/graph.html#q=DAG+"` (macOS; `xdg-open` on Linux). A bare path
    with `#…` fails: the hash needs an absolute `file://` URL. `--preset` on `render` only adds

@@ -13,6 +13,7 @@ from importlib import resources
 from pathlib import Path
 
 from airflow_depgraph import __version__
+from airflow_depgraph import report
 from airflow_depgraph import snapshot as snapmod
 from airflow_depgraph.auth import CredentialsError, resolve_password, resolve_user
 from airflow_depgraph.cli_format import TITLES, format_hits, format_tree, hits_json, stamp
@@ -228,6 +229,72 @@ def cmd_graph(args: argparse.Namespace) -> int:
     json_path = Path(args.output).with_suffix(".json")
     snapmod.dump(snap, json_path)
     print(f"wrote {json_path}")
+    return 0
+
+
+REPORT_TITLES = {
+    "critical": "Critical DAGs (most transitive downstream DAGs)",
+    "unlinked": "Unlinked DAGs (no explicit or inferred links)",
+    "unconsumed-assets": "Unconsumed assets (produced, never consumed)",
+    "failing": "Failing DAGs (last decisive run failed, not paused)",
+}
+
+
+def _table(headers: list[str], rows: list[list[str]]) -> str:
+    widths = [max(len(str(c)) for c in col) for col in zip(headers, *rows)]
+
+    def fmt(cells) -> str:
+        return "  ".join(str(c).ljust(w) for c, w in zip(cells, widths)).rstrip()
+    return "\n".join([fmt(headers)] + [fmt(r) for r in rows])
+
+
+def _report_table(kind: str, rows: list[dict]) -> tuple[list[str], list[list[str]]]:
+    def joined(values) -> str:
+        return ", ".join(values) if values else "—"
+    if kind == "critical":
+        def state(r: dict) -> str:
+            if r["state"] == "success":
+                return "ok"
+            if r["state"] == "failed":
+                return f"FAILED ({r['kind']})" if r["kind"] else "FAILED"
+            return "—"
+        return (["rank", "dag_id", "downstream", "direct", "state"],
+                [[r["rank"], r["dag_id"], r["downstream"], r["direct_consumers"], state(r)]
+                 for r in rows])
+    if kind == "unlinked":
+        return (["dag_id", "schedule", "paused", "tags"],
+                [[r["dag_id"], r["schedule"] or "—", "yes" if r["paused"] else "no", joined(r["tags"])]
+                 for r in rows])
+    if kind == "unconsumed-assets":
+        return (["asset", "producers"], [[r["asset"], joined(r["producers"])] for r in rows])
+    return (["dag_id", "kind", "failed tasks", "downstream", "cron fallback consumers"],
+            [[r["dag_id"], r["kind"] or "—", joined(r["failed_tasks"]), r["downstream"],
+              joined(r["stale_consumers"])] for r in rows])
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    s = _settings(args)
+    snap = snapmod.load(Path(args.snapshot))
+    tags = report.effective_tags(s, args.report_tags, args.all_tags)
+    inferred = not args.no_inferred
+    try:
+        if args.kind == "critical":
+            rows = report.critical(snap, s, tags=tags, inferred=inferred, top=args.top)
+        elif args.kind == "unlinked":
+            rows = report.unlinked(snap, s, tags=tags, inferred=inferred)
+        elif args.kind == "unconsumed-assets":
+            rows = report.unconsumed_assets(snap, s, tags=tags)
+        else:
+            rows = report.failing(snap, s, tags=tags, inferred=inferred)
+    except report.ReportError as exc:
+        raise CliError(str(exc)) from None
+    if args.json:
+        print(json.dumps(rows, indent=2, ensure_ascii=False))
+        return 0
+    print(f"{REPORT_TITLES[args.kind]} — {len(rows)} ({stamp(snap)})")
+    if rows:
+        headers, table = _report_table(args.kind, rows)
+        print(_table(headers, table))
     return 0
 
 
@@ -475,6 +542,24 @@ def _parser() -> argparse.ArgumentParser:
     t.add_argument("--regex", help="keep only task ids matching this regex")
     t.add_argument("--json", action="store_true", help="print a JSON list")
     t.set_defaults(func=cmd_tasks)
+
+    rp = add("report", parents=[common], help="critical, unlinked, unconsumed-assets or failing DAGs",
+             description="Reports over a snapshot file: critical (DAGs with the most downstream "
+                         "DAGs), unlinked (DAGs with no links), unconsumed-assets (assets nobody "
+                         "reads) and failing (DAGs whose last run failed). Works offline.",
+             examples=["airflow-depgraph report critical graph.json --top 10",
+                       "airflow-depgraph report failing graph.json --tag team-a --json",
+                       "airflow-depgraph report unlinked graph.json --all-tags"])
+    rp.add_argument("kind", choices=report.KINDS, help="which report to print")
+    rp.add_argument("snapshot", help="snapshot JSON file written by fetch")
+    rp.add_argument("--top", type=_depth, default=20, help="rows to show for critical (default 20)")
+    rp.add_argument("--json", action="store_true", help="print a JSON list instead of a table")
+    rp.add_argument("--tag", dest="report_tags", action="append", metavar="NAME",
+                    help="keep rows with any of these tags (repeatable; default: the preset's tags)")
+    rp.add_argument("--all-tags", action="store_true", help="ignore tags, even the preset's")
+    rp.add_argument("--no-inferred", action="store_true",
+                    help="ignore sensor dependencies inferred by fetch --infer-sensors")
+    rp.set_defaults(func=cmd_report)
 
     pr = add("presets", parents=[common], help="list presets, or show one resolved",
              description="List the presets found in the preset directories. With --preset, also "
