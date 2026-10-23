@@ -735,3 +735,9 @@ def test_client_gets_the_timeout_setting(monkeypatch):
     args = cli._parser().parse_args(["downstream", "dag_a", "--url", URL, "--token", "t"])
     cli._client(cli._settings(args), args)
     assert seen["timeout"] == 12
+
+
+def test_no_bulk_status_flag_turns_bulk_off():
+    s = cli._settings(cli._parser().parse_args(["fetch", "--no-bulk-status"]))
+    assert s.bulk_status is False
+    assert cli._settings(cli._parser().parse_args(["fetch"])).bulk_status is True

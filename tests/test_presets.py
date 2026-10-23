@@ -194,3 +194,9 @@ def test_timeout_and_workers_precedence(tmp_path):
 def test_timeout_and_workers_are_validated(env):
     with pytest.raises(PresetError):
         resolve({}, env, None)
+
+
+def test_bulk_status_defaults_on_and_env_turns_it_off():
+    assert resolve({}, {}, None).bulk_status is True
+    assert resolve({}, {"AIRFLOW_DEPGRAPH_BULK_STATUS": "false"}, None).bulk_status is False
+    assert resolve({"bulk_status": False}, {"AIRFLOW_DEPGRAPH_BULK_STATUS": "1"}, None).bulk_status is False

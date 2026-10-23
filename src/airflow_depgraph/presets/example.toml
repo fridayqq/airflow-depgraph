@@ -58,3 +58,6 @@ name = "example"
 
 # Parallel API requests for run status, task lists and sensor inference.
 # workers = 8
+
+# Read the run status from bulk listings (fewer calls); false reads each DAG on its own.
+# bulk_status = true

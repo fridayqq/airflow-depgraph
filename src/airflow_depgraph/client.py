@@ -320,6 +320,11 @@ class AirflowClient:
     def tasks(self, dag_id: str) -> list[dict]:
         return self.get(f"/api/v2/dags/{self._q(dag_id)}/tasks")["tasks"]
 
+    def has_successful_task(self, dag_id: str, run_id: str) -> bool:
+        """True when one task of the run succeeded (one call, one row)."""
+        path = f"/api/v2/dags/{self._q(dag_id)}/dagRuns/{self._q(run_id)}/taskInstances"
+        return bool(self.get(path, limit=1, state="success").get("task_instances"))
+
     def task_instance(self, dag_id: str, run_id: str, task_id: str) -> dict:
         return self.get(f"/api/v2/dags/{self._q(dag_id)}/dagRuns/{self._q(run_id)}"
                         f"/taskInstances/{self._q(task_id)}")

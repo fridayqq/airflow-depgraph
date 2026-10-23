@@ -186,6 +186,10 @@ class BulkFake:
         self.calls["task_instances"] += 1
         return self.tis.get((dag_id, run_id), [])
 
+    def has_successful_task(self, dag_id, run_id):
+        self.calls["has_success"] += 1
+        return any(ti["state"] == "success" for ti in self.tis.get((dag_id, run_id), []))
+
     def bulk_dag_runs(self, dag_ids, since_iso, per_dag=None):
         if self.bulk_status:
             raise ApiError("no bulk", self.bulk_status, "/dagRuns/list")
@@ -245,15 +249,40 @@ def test_bulk_matches_per_dag_path_case_by_case():
     fake.calls.clear()
     bulk = fetch_status(fake, ids, s, with_tasks=False, catalog=cat)
     assert bulk == per
-    # Two DAGs reach the lookback in the bulk listing; the rest have fewer runs and go per DAG.
+    # d_tests has a decisive run in the listing, so it is bulk; only the DAGs with no decisive run
+    # and fewer runs than the lookback are read per DAG: d_running, d_skipped, d_nodata.
     assert fake.calls["bulk_runs"] >= 1 and fake.calls["bulk_tis"] >= 1
-    assert fake.calls["dag_runs"] == 4  # d_tests, d_running, d_skipped, d_nodata
+    assert fake.calls["dag_runs"] == 3
     assert bulk["d_success"]["last_run"]["state"] == "success"
     assert bulk["d_empty"]["last_run"]["run_id"] == "e1"
     assert bulk["d_tests"]["last_run"]["kind"] == "tests"
     assert bulk["d_pipe"]["last_run"]["kind"] == "pipeline"
     assert bulk["d_running"]["last_run"] is None and bulk["d_skipped"]["last_run"] is None
     assert bulk["d_nodata"]["last_run"] is None
+
+
+def test_dag_with_fewer_runs_but_a_decisive_one_is_bulk():
+    fake = BulkFake({"d": [_run("d", "r2", "success"), _run("d", "r1", "failed")]},
+                    {("d", "r2"): [{"task_id": "a", "state": "success"}],
+                     ("d", "r1"): [{"task_id": "load", "state": "failed"}]})
+    out = fetch_status(fake, ["d"], Settings(), with_tasks=False, catalog=_catalog(["d"]))
+    assert out["d"]["last_run"]["run_id"] == "r2"
+    assert fake.calls["dag_runs"] == 0 and fake.calls["bulk_runs"] == 1
+
+
+def test_fewer_runs_all_undecided_still_reads_per_dag():
+    fake = BulkFake({"d": [_run("d", "r1", "running")]}, {})
+    out = fetch_status(fake, ["d"], Settings(), with_tasks=False, catalog=_catalog(["d"]))
+    assert out["d"]["last_run"] is None
+    assert fake.calls["dag_runs"] == 1
+
+
+def test_full_listing_of_undecided_runs_is_final_without_per_dag_read():
+    runs = [_run("d", f"r{k}", "success") for k in range(5)]
+    fake = BulkFake({"d": runs}, {("d", f"r{k}"): [{"task_id": "a", "state": "skipped"}] for k in range(5)})
+    out = fetch_status(fake, ["d"], Settings(), with_tasks=False, catalog=_catalog(["d"]))
+    assert out["d"]["last_run"] is None
+    assert fake.calls["dag_runs"] == 0 and fake.calls["task_instances"] == 0
 
 
 def test_bulk_uses_few_calls_for_fifty_dags():
@@ -263,17 +292,28 @@ def test_bulk_uses_few_calls_for_fifty_dags():
     fake = BulkFake(runs, tis)
     out = fetch_status(fake, ids, Settings(), with_tasks=False, catalog=_catalog(ids))
     assert all(out[d]["last_run"]["state"] == "success" for d in ids)
-    assert fake.calls["bulk_runs"] == 1 and fake.calls["bulk_tis"] == 1
+    assert fake.calls["bulk_runs"] == 1 and fake.calls["bulk_tis"] == 0
+    assert fake.calls["has_success"] == 50          # one parallel check per DAG
     assert fake.calls["dag_runs"] == 0 and fake.calls["task_instances"] == 0
 
 
-def test_dag_with_fewer_runs_than_lookback_is_read_per_dag():
-    ids = ["d_few"]
-    fake = BulkFake({"d_few": [_run("d_few", "r1", "success")]},
-                    {("d_few", "r1"): [{"task_id": "a", "state": "success"}]})
-    out = fetch_status(fake, ids, Settings(), with_tasks=False, catalog=_catalog(ids))
-    assert out["d_few"]["last_run"]["run_id"] == "r1"
-    assert fake.calls["dag_runs"] == 1
+def test_success_checks_run_in_parallel():
+    import threading
+    seen = set()
+
+    class Parallel(BulkFake):
+        def has_successful_task(self, dag_id, run_id):
+            seen.add(threading.get_ident())
+            import time
+            time.sleep(0.02)
+            return super().has_successful_task(dag_id, run_id)
+
+    ids = [f"d{i}" for i in range(12)]
+    runs = {d: [_run(d, f"r{d}", "success")] for d in ids}
+    tis = {(d, f"r{d}"): [{"task_id": "a", "state": "success"}] for d in ids}
+    fetch_status(Parallel(runs, tis), ids, Settings(), with_tasks=False, workers=4,
+                 catalog=_catalog(ids))
+    assert len(seen) > 1
 
 
 @pytest.mark.parametrize("status_code", [404, 405])
@@ -294,3 +334,11 @@ def test_bulk_401_is_raised():
     with pytest.raises(ApiError) as ei:
         fetch_status(fake, list(runs), Settings(), with_tasks=False)
     assert ei.value.status == 401
+
+
+def test_bulk_status_off_reads_per_dag():
+    runs, tis = _cases()
+    ids = list(runs)
+    fake = BulkFake(runs, tis)
+    fetch_status(fake, ids, Settings(bulk_status=False), with_tasks=False, catalog=_catalog(ids))
+    assert fake.calls["bulk_runs"] == 0 and fake.calls["dag_runs"] == len(ids)

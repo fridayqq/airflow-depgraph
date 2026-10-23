@@ -40,7 +40,7 @@ class CliError(Exception):
 def _settings(args: argparse.Namespace) -> Settings:
     cli = {k: getattr(args, k, None)
            for k in ("url", "user", "token", "with_status", "with_tasks", "title", "highlight",
-                     "infer_sensors", "timeout", "workers")}
+                     "infer_sensors", "timeout", "workers", "bulk_status")}
     if getattr(args, "tags", None):
         cli["tags"] = tuple(args.tags)
     return resolve(cli, os.environ, args.preset)
@@ -447,6 +447,8 @@ def _parser() -> argparse.ArgumentParser:
                           help="seconds to wait for one API request, retries excluded (default 25)")
     net_opts.add_argument("--workers", type=int, default=None, metavar="N",
                           help="parallel API requests for status, task lists and sensors (default 8)")
+    net_opts.add_argument("--no-bulk-status", dest="bulk_status", action="store_const", const=False,
+                          default=None, help="read the run status of each DAG instead of the bulk listings")
 
     fetch_opts = argparse.ArgumentParser(add_help=False)
     fetch_opts.add_argument("--with-status", action="store_true", default=None,

@@ -39,6 +39,7 @@ class Settings:
     infer_interval_minutes: int = 30
     timeout: float = 25             # seconds per API request
     workers: int = 8                # parallel API requests (status, task lists, sensors)
+    bulk_status: bool = True        # run status from bulk listings; False reads each DAG
     preset_name: str | None = None
 
 
