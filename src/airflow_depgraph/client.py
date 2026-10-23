@@ -118,11 +118,27 @@ class AirflowClient:
                         limit=limit, order_by="-run_after")
         return data["dag_runs"]
 
-    def task_instances(self, dag_id: str, run_id: str) -> list[dict]:
-        data = self.get(
-            f"/api/v2/dags/{self._q(dag_id)}/dagRuns/{self._q(run_id)}/taskInstances"
-        )
-        return data["task_instances"]
+    def task_instances(self, dag_id: str, run_id: str, state: str | None = None) -> list[dict]:
+        """Every task instance of the run, paged; stops at total_entries or a repeated page."""
+        path = f"/api/v2/dags/{self._q(dag_id)}/dagRuns/{self._q(run_id)}/taskInstances"
+        out: list[dict] = []
+        seen: set = set()
+        offset = 0
+        while True:
+            query: dict = {"limit": 100, "offset": offset}
+            if state:
+                query["state"] = state
+            data = self.get(path, **query)
+            page = data.get("task_instances") or []
+            fresh = [ti for ti in page if ti.get("task_id") not in seen]
+            if not page or not fresh:
+                return out
+            seen.update(ti.get("task_id") for ti in fresh)
+            out.extend(fresh)
+            offset += len(page)
+            total = data.get("total_entries")
+            if isinstance(total, int) and offset >= total:
+                return out
 
     def tasks(self, dag_id: str) -> list[dict]:
         return self.get(f"/api/v2/dags/{self._q(dag_id)}/tasks")["tasks"]

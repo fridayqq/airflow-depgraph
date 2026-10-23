@@ -68,12 +68,12 @@ def test_dag_runs_query():
 def test_ids_are_quoted_and_lists_unwrapped():
     op = fake_opener(
         {
-            "/api/v2/dags/a%2Fb/dagRuns/r%3A1/taskInstances": {"task_instances": [1]},
+            "/api/v2/dags/a%2Fb/dagRuns/r%3A1/taskInstances": {"task_instances": [{"task_id": "t1"}]},
             "/api/v2/dags/a%2Fb/tasks": {"tasks": [2]},
         }
     )
     c = AirflowClient(URL, "t", opener=op)
-    assert c.task_instances("a/b", "r:1") == [1]
+    assert c.task_instances("a/b", "r:1") == [{"task_id": "t1"}]
     assert c.tasks("a/b") == [2]
 
 
@@ -148,3 +148,42 @@ def test_list_dags_follows_total_entries_past_capped_pages():
 
     assert len(AirflowClient(URL, "t", opener=opener).list_dags()) == 120
     assert seen == [0, 50, 100]
+
+
+def test_task_instances_pages_by_offset_and_stops_at_total_entries():
+    import urllib.parse
+    from tests.conftest import _Resp
+    calls = []
+    all_items = [{"task_id": f"t{i}"} for i in range(130)]
+
+    def opener(req, timeout=None):
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(req.full_url).query)
+        offset, limit = int(q["offset"][0]), int(q["limit"][0])
+        calls.append(offset)
+        page = all_items[offset:offset + limit]
+        return _Resp(json.dumps({"task_instances": page, "total_entries": 130}).encode())
+
+    out = AirflowClient(URL, "t", opener=opener).task_instances("d", "r")
+    assert len(out) == 130
+    assert out == all_items
+    assert calls == [0, 100]
+
+
+def test_task_instances_state_filter_in_query():
+    op = fake_opener({"/api/v2/dags/d/dagRuns/r/taskInstances": {"task_instances": []}})
+    AirflowClient(URL, "t", opener=op).task_instances("d", "r", state="failed")
+    assert "state=failed" in op.calls[0]["url"]
+
+
+def test_task_instances_stops_when_page_repeats_without_total():
+    from tests.conftest import _Resp
+    same = [{"task_id": f"t{i}"} for i in range(100)]
+    calls = []
+
+    def opener(req, timeout=None):
+        calls.append(req.full_url)
+        return _Resp(json.dumps({"task_instances": same}).encode())
+
+    out = AirflowClient(URL, "t", opener=opener).task_instances("d", "r")
+    assert len(calls) == 2
+    assert len(out) == 100
