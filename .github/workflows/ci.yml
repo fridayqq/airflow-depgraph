@@ -28,4 +28,4 @@ jobs:
 
       - name: JavaScript tests
         run: |
-          if [ -d tests/js ]; then node --test tests/js; else echo "no tests/js, skipped"; fi
+          if [ -d tests/js ]; then node --test tests/js/*.test.mjs; else echo "no tests/js, skipped"; fi
