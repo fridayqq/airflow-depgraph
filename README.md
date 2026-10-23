@@ -152,6 +152,7 @@ Other options worth knowing:
 - `--status FILE` (on `render` and `graph`) overrides the status of DAGs from a JSON file `{dag_id: {kind, paused, date}}`.
 - `--node-id dag:my_dag` (on `fetch` and `graph`) fetches only the subgraph around one node.
 - `--title` sets the page title and `--highlight REGEX` highlights DAG ids that match.
+- `--tag NAME` (on `fetch`, `render` and `graph`, repeatable) sets the page's default tag filter. It replaces the `tags` of the preset or the environment.
 - `presets --preset NAME` prints the resolved settings of a preset (never the token).
 
 ## Credentials
@@ -218,7 +219,11 @@ name = "example"
 # task_query_regex = "^(extract|load)_"
 # How many recent runs to look at when computing the status.
 # status_runs_lookback = 5
+# Default page filter: only DAGs with any of these tags (the page can switch it off).
+# tags = ["team-a"]
 ```
+
+`tags` is a TOML list of strings. In the environment it is comma-separated: `AIRFLOW_DEPGRAPH_TAGS="team-a,analytics"`.
 
 ## Page features
 
@@ -229,7 +234,10 @@ The page is a single HTML file with d3 inlined, so it works offline.
 - **Click.** Selecting a node highlights its upstream and downstream chain and fills the side lists.
 - **Search.** Type a DAG name to focus it. `+dag` adds everything upstream, `dag+` everything downstream, and `2+dag+3` limits that to 2 levels up and 3 down.
 - **Toggles.** Hide assets, show only failing DAGs, and highlight the DAGs matched by the preset `highlight` regex.
-- **Hash flags.** The page writes its state to the URL fragment as you type or toggle, so a view can be shared: `#q=<text>,onlyFail,hideAssets,hl`. The search text is URL-encoded. Opening a page with such a fragment restores the view.
+- **Filters.** Three filters are on by default. *only linked DAGs* hides DAGs that have no asset, trigger or sensor link to another DAG; switched off, those DAGs appear in a grid below the graph. *only active DAGs* hides paused DAGs. *only tags: …* keeps the DAGs that carry any of the configured `tags`; it is shown only when tags are configured. *+ connected DAGs* (off by default) also keeps DAGs of other tags that are one edge or one asset, trigger or sensor away from a kept DAG. Assets, triggers and sensors stay only while they still join kept nodes. *only failing* applies after these filters. The header shows how many DAGs are on screen out of the total. These filters need the DAG catalog (see the snapshot format); stale DAGs are never shown.
+- **Hash flags.** The page writes its state to the URL fragment as you type or toggle, so a view can be shared: `#q=<text>,onlyFail,hideAssets,hl,allLinks,paused,allTags,conn`. Filters that are on by default appear as their negation: `allLinks` shows unlinked DAGs, `paused` shows paused DAGs, `allTags` switches the tag filter off, and `conn` switches on *+ connected DAGs*. The search text is URL-encoded. Opening a page with such a fragment restores the view.
+
+The text queries `downstream` and `upstream` are not filtered by tags or paused state.
 
 ## How failing is decided
 
@@ -266,11 +274,15 @@ Snapshots are JSON, format 1:
       "last_run": {"state": "failed", "kind": "tests", "failed_tasks": ["dbt_test"]},
       "tasks": ["extract", "dbt_test"]
     }
+  },
+  "catalog": {
+    "my_dag": {"tags": ["team-a"], "is_paused": false, "is_stale": false, "schedule": "Asset", "owners": ["alice"]},
+    "lonely_dag": {"tags": [], "is_paused": true, "is_stale": false, "schedule": "0 5 * * *", "owners": ["bob"]}
   }
 }
 ```
 
-`dags` is optional. `last_run` is present with `--with-status` and `tasks` with `--with-tasks`. The `last_run` object is abbreviated here. Edges whose endpoints are missing from `nodes` are dropped on load.
+`dags` is optional. `catalog` is optional too: `fetch`, `graph` and the Airflow plugin fill it from one paginated `GET /api/v2/dags`, and the page filters need it. Without it (older snapshots, or a user who may not list DAGs) the page shows only linked DAGs, takes paused state from `dags`, and hides the tag filter. Catalog DAGs that are not in the graph become unlinked DAG nodes, and stale DAGs are dropped from the page. `last_run` is present with `--with-status` and `tasks` with `--with-tasks`. The `last_run` object is abbreviated here. Edges whose endpoints are missing from `nodes` are dropped on load.
 
 ## Development
 

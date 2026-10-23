@@ -38,6 +38,9 @@ class FakeClient:
     def version(self):
         return "3.3.2"
 
+    def list_dags(self):
+        return []
+
 
 @pytest.fixture
 def plugin(monkeypatch):

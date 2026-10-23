@@ -43,6 +43,18 @@ class FakeClient:
     def version(self):
         return "3.3.2"
 
+    list_dags_error = None
+
+    def list_dags(self):
+        if self.list_dags_error:
+            raise self.list_dags_error
+        return [{"dag_id": "x", "tags": [{"name": "team-a", "dag_id": "x"}], "is_paused": False,
+                 "is_stale": False, "timetable_summary": "Asset", "owners": ["o"]},
+                {"dag_id": "y", "tags": [], "is_paused": True, "is_stale": False,
+                 "timetable_summary": "Asset", "owners": ["o"]},
+                {"dag_id": "z", "tags": ["team-a"], "is_paused": False, "is_stale": False,
+                 "timetable_summary": None, "owners": []}]
+
     def dag(self, dag_id):
         return {"is_paused": dag_id == "y", "timetable_summary": "Asset", "owners": ["o"]}
 
@@ -90,7 +102,7 @@ def test_upstream_arrow(capsys):
 def test_downstream_unknown_dag_exit_1(capsys):
     assert cli.main(["downstream", "nope", FIX]) == 1
     err = capsys.readouterr().err
-    assert "error: " in err and "is not in the dependency graph (12 DAGs known)" in err
+    assert "error: " in err and "is not in the dependency graph (13 DAGs known)" in err
 
 
 def test_render_from_snapshot_writes_file(tmp_path):
@@ -232,3 +244,43 @@ def test_offline_snapshot_without_fetched_at_not_live(tmp_path, capsys):
     f.write_text(json.dumps(data))
     assert cli.main(["downstream", "dag_a", str(f)]) == 0
     assert "live" not in capsys.readouterr().out.splitlines()[0]
+
+
+def test_fetch_live_writes_catalog(tmp_path, live):
+    out = tmp_path / "s.json"
+    assert cli.main(["fetch", "--url", URL, "-o", str(out), "--tag", "team-a"]) == 0
+    cat = json.loads(out.read_text())["catalog"]
+    assert set(cat) == {"x", "y", "z"} and cat["x"]["tags"] == ["team-a"] and cat["y"]["is_paused"] is True
+
+
+def test_fetch_without_catalog_warns_and_continues(tmp_path, live, monkeypatch, capsys):
+    from airflow_depgraph.client import ApiError
+    monkeypatch.setattr(FakeClient, "list_dags_error", ApiError("403 on /api/v2/dags: reason", 403))
+    out = tmp_path / "s.json"
+    assert cli.main(["fetch", "--url", URL, "-o", str(out)]) == 0
+    assert "catalog" not in json.loads(out.read_text())
+    assert "warning:" in capsys.readouterr().err
+
+
+def test_render_tag_flag_is_repeatable(tmp_path):
+    out = tmp_path / "g.html"
+    assert cli.main(["render", FIX, "-o", str(out), "--tag", "team-a", "--tag", "reporting"]) == 0
+    assert '"tags": ["team-a", "reporting"]' in out.read_text()
+
+
+def test_graph_tag_flag_replaces_env(tmp_path, live, monkeypatch):
+    monkeypatch.setenv("AIRFLOW_DEPGRAPH_TAGS", "envtag")
+    out = tmp_path / "x.html"
+    assert cli.main(["graph", "--url", URL, "-o", str(out), "--tag", "clitag"]) == 0
+    html = out.read_text()
+    assert '"tags": ["clitag"]' in html and "envtag" not in html
+    assert '"unlinked": true' in html
+
+
+def test_presets_prints_tags(capsys, monkeypatch, tmp_path):
+    d = tmp_path / "p"
+    d.mkdir()
+    (d / "mine.toml").write_text('tags = ["a", "b"]\n')
+    monkeypatch.setenv("AIRFLOW_DEPGRAPH_PRESETS", str(d))
+    assert cli.main(["presets", "--preset", "mine"]) == 0
+    assert "tags = a, b" in capsys.readouterr().out

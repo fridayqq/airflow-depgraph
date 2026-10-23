@@ -34,6 +34,7 @@ class Settings:
     tests_task_regex: str = r"(^|[._-])tests?([._-]|$)"
     task_query_regex: str | None = None
     status_runs_lookback: int = 5
+    tags: tuple[str, ...] = ()
     preset_name: str | None = None
 
 
@@ -89,7 +90,17 @@ def list_presets(env: Mapping[str, str]) -> list[tuple[str, Path]]:
     return sorted(found.items())
 
 
+def _coerce_tags(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return tuple(t.strip() for t in value.split(",") if t.strip())
+    if isinstance(value, (list, tuple)) and all(isinstance(t, str) for t in value):
+        return tuple(value)
+    raise PresetError(f"tags must be a list of strings, got {value!r}")
+
+
 def _coerce(field: str, value: object) -> object:
+    if field == "tags":
+        return _coerce_tags(value)
     ftype = _FIELDS[field].type
     if isinstance(value, str):
         if ftype == "bool":
@@ -125,5 +136,7 @@ def resolve(cli: Mapping[str, object], env: Mapping[str, str], preset: str | Non
         elif env.get(env_key):
             values[field] = _coerce(field, env[env_key])
         elif field in from_file:
+            if field == "tags" and not isinstance(from_file[field], list):
+                raise PresetError(f"tags must be a list of strings, got {from_file[field]!r}")
             values[field] = _coerce(field, from_file[field])
     return Settings(**values)

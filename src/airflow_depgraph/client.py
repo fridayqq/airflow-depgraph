@@ -98,6 +98,16 @@ class AirflowClient:
     def _q(value: str) -> str:
         return urllib.parse.quote(value, safe="")
 
+    def list_dags(self, page_size: int = 100) -> list[dict]:
+        """Every DAG the user may see, stale ones included (they are dropped at render time)."""
+        out: list[dict] = []
+        while True:
+            page = self.get("/api/v2/dags", limit=page_size, offset=len(out),
+                            exclude_stale="false").get("dags") or []
+            out.extend(page)
+            if len(page) < page_size:
+                return out
+
     def dag(self, dag_id: str) -> dict:
         return self.get(f"/api/v2/dags/{self._q(dag_id)}")
 

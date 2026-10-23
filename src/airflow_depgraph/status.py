@@ -44,14 +44,20 @@ def classify_runs(runs: list[dict], task_instances: Callable[[str], list[dict]],
     return None
 
 
-def _one(client: AirflowClient, dag_id: str, s: Settings, with_tasks: bool) -> dict:
-    d = client.dag(dag_id)
+def _one(client: AirflowClient, dag_id: str, s: Settings, with_tasks: bool,
+         catalog: dict[str, dict] | None = None) -> dict:
+    d = (catalog or {}).get(dag_id)
+    if d is None:
+        d = client.dag(dag_id)
+        d = {"is_paused": d.get("is_paused"),
+             "schedule": d.get("timetable_summary") or d.get("timetable_description"),
+             "owners": d.get("owners")}
     runs = client.dag_runs(dag_id, s.status_runs_lookback)
     last = classify_runs(runs, lambda rid: client.task_instances(dag_id, rid),
                          s.tests_task_regex)
     out = {
         "is_paused": bool(d.get("is_paused")),
-        "schedule": d.get("timetable_summary") or d.get("timetable_description") or None,
+        "schedule": d.get("schedule") or None,
         "owners": d.get("owners") or [],
         "last_run": asdict(last) if last else None,
     }
@@ -62,11 +68,13 @@ def _one(client: AirflowClient, dag_id: str, s: Settings, with_tasks: bool) -> d
 
 def fetch_status(client: AirflowClient, dag_ids: list[str], s: Settings, *,
                  with_tasks: bool, workers: int = 8,
-                 progress: Callable[[str], None] | None = None) -> dict[str, dict]:
+                 progress: Callable[[str], None] | None = None,
+                 catalog: dict[str, dict] | None = None) -> dict[str, dict]:
+    """catalog: DAG facts already listed (snapshot `catalog`); saves one GET per DAG."""
     result: dict[str, dict] = {}
     total = len(dag_ids)
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_one, client, d, s, with_tasks): d for d in dag_ids}
+        futures = {pool.submit(_one, client, d, s, with_tasks, catalog): d for d in dag_ids}
         for done, fut in enumerate(as_completed(futures), 1):
             dag_id = futures[fut]
             try:

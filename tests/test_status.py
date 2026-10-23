@@ -117,3 +117,13 @@ def test_dotted_dbt_test_with_upstream_report_is_tests_kind():
     assert res.kind == "tests"
     assert res.failed_tasks == ["dbt_tasks.dbt-test-orders"]
     assert res.upstream_failed == 1
+
+
+def test_fetch_status_reuses_catalog():
+    class NoDag(FakeClient):
+        def dag(self, dag_id):
+            raise AssertionError("catalog DAGs must not be fetched one by one")
+    cat = {"dag_a": {"tags": [], "is_paused": True, "is_stale": False, "schedule": "Daily", "owners": ["me"]}}
+    out = fetch_status(NoDag(), ["dag_a"], Settings(), with_tasks=False, catalog=cat)
+    assert out["dag_a"]["is_paused"] is True and out["dag_a"]["schedule"] == "Daily"
+    assert out["dag_a"]["owners"] == ["me"] and out["dag_a"]["last_run"]["state"] == "success"

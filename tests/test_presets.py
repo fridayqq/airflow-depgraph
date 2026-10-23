@@ -150,3 +150,20 @@ def test_example_mentions_every_key():
     text = find_preset("example", {}).read_text()
     missing = [k for k in sorted(PRESET_KEYS | {"name"}) if k not in text]
     assert not missing
+
+
+def test_tags_precedence_cli_env_preset(tmp_path):
+    f = write(tmp_path / "p.toml", 'tags = ["team-a", "analytics"]\n')
+    env = {"AIRFLOW_DEPGRAPH_TAGS": " team-b , ,team-c "}
+    assert resolve({}, {}, str(f)).tags == ("team-a", "analytics")
+    assert resolve({}, env, str(f)).tags == ("team-b", "team-c")
+    assert resolve({"tags": ("cli",)}, env, str(f)).tags == ("cli",)
+    assert resolve({}, {"AIRFLOW_DEPGRAPH_TAGS": " , "}, str(f)).tags == ()
+    assert resolve({}, {}, None).tags == ()
+
+
+@pytest.mark.parametrize("value", ['"team-a"', '[1, 2]', '["a", 3]'])
+def test_tags_must_be_list_of_strings(tmp_path, value):
+    f = write(tmp_path / "p.toml", f"tags = {value}\n")
+    with pytest.raises(PresetError, match="tags"):
+        resolve({}, {}, str(f))

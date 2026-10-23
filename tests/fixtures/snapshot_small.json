@@ -16,6 +16,7 @@
     {"id": "dag:dag_j", "label": "dag_j", "type": "dag"},
     {"id": "dag:dag_k_report", "label": "dag_k_report", "type": "dag"},
     {"id": "dag:dag_l_report", "label": "dag_l_report", "type": "dag"},
+    {"id": "dag:dag_m_stale", "label": "dag_m_stale", "type": "dag"},
     {"id": "asset:1", "label": "team-orders", "type": "asset"},
     {"id": "asset:2", "label": "orders_clean", "type": "asset"},
     {"id": "asset:3", "label": "team-customers", "type": "asset"},
@@ -48,8 +49,26 @@
     {"source_id": "dag:dag_j", "target_id": "asset:2"},
     {"source_id": "dag:dag_j", "target_id": "asset:6"},
     {"source_id": "asset:6", "target_id": "sensor:2"},
-    {"source_id": "sensor:2", "target_id": "dag:dag_k_report"}
+    {"source_id": "sensor:2", "target_id": "dag:dag_k_report"},
+    {"source_id": "dag:dag_m_stale", "target_id": "asset:5"}
   ],
+  "catalog": {
+    "dag_a": {"tags": ["team-a"], "is_paused": false, "is_stale": false, "schedule": "0 5 * * *", "owners": ["team-orders"]},
+    "dag_b": {"tags": ["team-a", "analytics"], "is_paused": false, "is_stale": false, "schedule": "Asset", "owners": ["team-orders"]},
+    "dag_c": {"tags": ["analytics"], "is_paused": false, "is_stale": false, "schedule": "Asset", "owners": ["team-orders"]},
+    "dag_d": {"tags": [], "is_paused": false, "is_stale": false, "schedule": "Asset", "owners": ["team-billing"]},
+    "dag_e": {"tags": [], "is_paused": false, "is_stale": false, "schedule": null, "owners": ["team-orders"]},
+    "dag_f": {"tags": [], "is_paused": false, "is_stale": false, "schedule": "Asset", "owners": ["team-customers"]},
+    "dag_g": {"tags": [], "is_paused": false, "is_stale": false, "schedule": "Asset", "owners": ["team-customers"]},
+    "dag_h": {"tags": ["team-a"], "is_paused": true, "is_stale": false, "schedule": null, "owners": ["team-customers"]},
+    "dag_i": {"tags": [], "is_paused": false, "is_stale": false, "schedule": null, "owners": ["team-orders"]},
+    "dag_j": {"tags": [], "is_paused": false, "is_stale": false, "schedule": "0 4 * * *", "owners": ["team-orders"]},
+    "dag_k_report": {"tags": ["reporting"], "is_paused": false, "is_stale": false, "schedule": "Asset", "owners": ["team-reporting"]},
+    "dag_l_report": {"tags": ["reporting"], "is_paused": false, "is_stale": false, "schedule": "Asset", "owners": ["team-reporting"]},
+    "dag_m_stale": {"tags": ["team-a"], "is_paused": false, "is_stale": true, "schedule": null, "owners": ["team-orders"]},
+    "dag_x_cron": {"tags": ["team-a"], "is_paused": false, "is_stale": false, "schedule": "0 1 * * *", "owners": ["team-orders"]},
+    "dag_y_cron": {"tags": [], "is_paused": false, "is_stale": false, "schedule": "0 2 * * *", "owners": ["team-billing"]}
+  },
   "dags": {
     "dag_a": {
       "is_paused": false,

@@ -7,7 +7,7 @@ from airflow_depgraph.snapshot import SnapshotError, dump, load, new, validate_p
 
 
 def test_load_fixture(small_snapshot):
-    assert small_snapshot.format == 1 and len(small_snapshot.graph.dag_ids) == 12
+    assert small_snapshot.format == 1 and len(small_snapshot.graph.dag_ids) == 13
 
 
 def test_fixture_downstream_of_dag_a(small_graph):
@@ -98,3 +98,25 @@ def test_validate_does_not_synthesize_dag_from_asset_edge():
            "edges": [{"source_id": "asset:1", "target_id": "dag:hidden"}]}
     nodes, edges = validate_payload(raw, airflow_version="3.1.5")
     assert [n["id"] for n in nodes] == ["asset:1"] and edges == []
+
+
+def test_catalog_roundtrip_and_optional(tmp_path, small_snapshot):
+    assert small_snapshot.catalog["dag_h"]["is_paused"] is True
+    p = tmp_path / "out.json"
+    dump(small_snapshot, p)
+    assert load(p).catalog == small_snapshot.catalog
+    snap = new(nodes=[], edges=[], source=None, airflow_version=None)
+    dump(snap, p)
+    assert "catalog" not in json.loads(p.read_text()) and load(p).catalog is None
+
+
+def test_build_catalog_normalises_tags_and_schedule():
+    from airflow_depgraph.snapshot import build_catalog
+    cat = build_catalog([
+        {"dag_id": "a", "tags": [{"name": "team-a", "dag_id": "a"}, "analytics"], "is_paused": True,
+         "is_stale": False, "timetable_summary": "0 5 * * *", "owners": ["o"]},
+        {"dag_id": "b", "timetable_description": "Daily"},
+    ])
+    assert cat["a"] == {"tags": ["team-a", "analytics"], "is_paused": True, "is_stale": False,
+                        "schedule": "0 5 * * *", "owners": ["o"]}
+    assert cat["b"] == {"tags": [], "is_paused": False, "is_stale": False, "schedule": "Daily", "owners": []}

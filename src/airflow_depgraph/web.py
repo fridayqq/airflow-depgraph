@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import threading
 import time
 from collections import OrderedDict
@@ -11,7 +12,7 @@ from typing import Callable, Mapping
 from urllib.parse import urlparse
 
 from . import snapshot as snapmod
-from .client import AirflowClient
+from .client import AirflowClient, ApiError
 from .presets import Settings
 from .render import render
 from .status import fetch_status
@@ -21,6 +22,7 @@ CACHE_SECONDS = 300
 CACHE_ENTRIES = 64
 MAX_BUILDS = 3
 CLIENT_TIMEOUT = 10
+log = logging.getLogger(__name__)
 
 
 def extract_token(cookies: Mapping[str, str], headers: Mapping[str, str]) -> str | None:
@@ -111,6 +113,11 @@ class PageBuilder:
         version = client.version()
         nodes, edges = snapmod.validate_payload(client.dependencies(), version)
         snap = snapmod.new(nodes, edges, public_url, version)
+        try:
+            snap.catalog = snapmod.build_catalog(client.list_dags())
+        except ApiError as exc:
+            log.warning("airflow-depgraph: cannot list DAGs, page filters degraded: %s", exc)
         if with_status:
-            snap.dags = fetch_status(client, snap.graph.dag_ids, self.settings, with_tasks=False)
+            snap.dags = fetch_status(client, snap.graph.dag_ids, self.settings, with_tasks=False,
+                                     catalog=snap.catalog)
         return render(snap, self.settings)

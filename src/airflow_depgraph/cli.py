@@ -36,6 +36,8 @@ class CliError(Exception):
 def _settings(args: argparse.Namespace) -> Settings:
     cli = {k: getattr(args, k, None)
            for k in ("url", "user", "token", "with_status", "with_tasks", "title", "highlight")}
+    if getattr(args, "tags", None):
+        cli["tags"] = tuple(args.tags)
     return resolve(cli, os.environ, args.preset)
 
 
@@ -57,7 +59,13 @@ def _live_snapshot(client: AirflowClient, s: Settings, node_id: str | None) -> S
         nodes, edges = snapmod.validate_payload(raw, version)
     except SnapshotError as exc:
         raise SnapshotError(f"{exc} (Airflow {version or 'version unknown'})") from None
-    return snapmod.new(nodes, edges, s.url, version)
+    snap = snapmod.new(nodes, edges, s.url, version)
+    try:
+        snap.catalog = snapmod.build_catalog(client.list_dags())
+    except ApiError as exc:
+        print(f"warning: cannot list DAGs ({exc}); no tag/paused/unlinked data for the page",
+              file=sys.stderr)
+    return snap
 
 
 def _walk(snap: Snapshot, dag: str, direction: str, depth: int) -> list[Hit]:
@@ -73,7 +81,8 @@ def _fetch_dags(client: AirflowClient, snap: Snapshot, s: Settings) -> dict | No
     if s.with_status:
         def progress(msg: str) -> None:
             print(f"fetching status {msg.split()[0]}", file=sys.stderr)
-        return fetch_status(client, ids, s, with_tasks=s.with_tasks, progress=progress)
+        return fetch_status(client, ids, s, with_tasks=s.with_tasks, progress=progress,
+                            catalog=snap.catalog)
     if s.with_tasks:
         with ThreadPoolExecutor(max_workers=8) as pool:
             tasks = pool.map(lambda d: [t["task_id"] for t in client.tasks(d)], ids)
@@ -162,6 +171,10 @@ def _compile(pattern: str) -> re.Pattern:
 
 
 def _dag_info(client: AirflowClient | None, snap: Snapshot, dag_id: str) -> dict:
+    cat = (snap.catalog or {}).get(dag_id) if client is not None else None
+    if cat is not None:  # live: the catalog already holds what GET /dags/{id} would return
+        return {"is_paused": cat.get("is_paused"), "schedule": cat.get("schedule"),
+                "owners": cat.get("owners")}
     if client is not None:
         d = client.dag(dag_id)
         return {"is_paused": bool(d.get("is_paused")),
@@ -250,6 +263,8 @@ def cmd_presets(args: argparse.Namespace) -> int:
             value = getattr(s, f.name)
             if f.name == "token" or (f.name == "user" and not value):
                 continue
+            if isinstance(value, tuple):
+                value = ", ".join(value) or None
             print(f"{f.name} = {'(unset)' if value is None else value}")
     return 0
 
@@ -278,20 +293,24 @@ def _parser() -> argparse.ArgumentParser:
     render_opts.add_argument("--status", metavar="FILE",
                              help="JSON {dag_id: {kind, paused, date}} that overrides the snapshot status")
 
+    tag_opts = argparse.ArgumentParser(add_help=False)
+    tag_opts.add_argument("--tag", dest="tags", action="append", metavar="NAME",
+                          help="default page filter: only DAGs with any of these tags (repeatable)")
+
     p = argparse.ArgumentParser(prog="airflow-depgraph",
                                 description="Airflow 3 cross-DAG dependency graph")
     sub = p.add_subparsers(dest="command", required=True)
 
-    f = sub.add_parser("fetch", parents=[common, fetch_opts], help="save a snapshot")
+    f = sub.add_parser("fetch", parents=[common, fetch_opts, tag_opts], help="save a snapshot")
     f.add_argument("-o", "--output", default=DEFAULT_SNAPSHOT)
     f.set_defaults(func=cmd_fetch)
 
-    r = sub.add_parser("render", parents=[common, render_opts], help="render a snapshot to HTML")
+    r = sub.add_parser("render", parents=[common, render_opts, tag_opts], help="render a snapshot to HTML")
     r.add_argument("snapshot")
     r.add_argument("-o", "--output", default=DEFAULT_HTML)
     r.set_defaults(func=cmd_render)
 
-    g = sub.add_parser("graph", parents=[common, fetch_opts, render_opts],
+    g = sub.add_parser("graph", parents=[common, fetch_opts, render_opts, tag_opts],
                        help="fetch live and write HTML plus JSON")
     g.add_argument("-o", "--output", default=DEFAULT_HTML)
     g.set_defaults(func=cmd_graph)

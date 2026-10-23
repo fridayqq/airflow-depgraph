@@ -44,3 +44,6 @@ name = "example"
 
 # How many recent runs to look at when computing the status.
 # status_runs_lookback = 5
+
+# Default page filter: only DAGs with any of these tags (the page can switch it off).
+# tags = ["team-a"]

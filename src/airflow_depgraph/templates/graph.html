@@ -87,10 +87,15 @@ text.lbl {
 <header>
   <h1>__TITLE__</h1>
   <span class="st">__STATS__</span>
+  <span class="st" id="shown"></span>
   <span class="st" id="ver" hidden></span>
   <input id="q" type="search" placeholder="find a DAG or asset… (+dag, dag+, 2+dag+3)" autocomplete="off" aria-label="Search">
   <label class="t"><input type="checkbox" id="hideAssets"> DAG→DAG (hide assets)</label>
   <label class="t"><input type="checkbox" id="onlyFail"> only failing + their chain</label>
+  <label class="t"><input type="checkbox" id="onlyLinked" checked> only linked DAGs</label>
+  <label class="t"><input type="checkbox" id="onlyActive" checked> only active DAGs</label>
+  <label class="t" id="tagWrap"><input type="checkbox" id="onlyTags" checked> <span id="tagLbl">only tags</span></label>
+  <label class="t" id="connWrap"><input type="checkbox" id="conn"> + connected DAGs</label>
   <label class="t" id="hlWrap"><input type="checkbox" id="hl"> __HL_LABEL__</label>
   <span class="legend">
     <span><i style="background:var(--c-dag)"></i>DAG</span>
@@ -156,12 +161,49 @@ let selectedId = null, searchKeep = null, lastTargets = [];
 function r(n) { return n.type === 'dag' ? 4 + Math.sqrt(n.down) * 2.2 : 3.5; }
 const failing = n => n.fail && !n.fail.paused;
 
+const TAGS = META.catalog === false ? [] : (META.tags || []);  // no catalog: no tags to filter on
+const hasTag = n => (n.tags || []).some(t => TAGS.includes(t));
+const isLink = id => byId.get(id).type !== 'dag';
+
+// DAG ids of other DAGs one edge or one link node away from id.
+function neighbours(id) {
+  const out = [];
+  for (const adj of [outM, inM]) for (const y of adj.get(id) || []) {
+    if (!isLink(y)) out.push(y);
+    else for (const z of adj.get(y) || []) if (!isLink(z)) out.push(z);
+  }
+  return out;
+}
+
+// Tag, active and linked filters; returns the ids of the nodes they keep.
+function filtered() {
+  const tagOn = TAGS.length > 0 && box('onlyTags').checked, active = box('onlyActive').checked;
+  const okDag = n => !(active && n.paused);
+  const dagsAll = DATA.nodes.filter(n => n.type === 'dag');
+  const dags = new Set(dagsAll.filter(n => !n.unlinked && (!tagOn || hasTag(n)) && okDag(n)).map(n => n.id));
+  if (tagOn && box('conn').checked) [...dags].forEach(id => neighbours(id).forEach(x => { if (okDag(byId.get(x))) dags.add(x); }));
+  if (!box('onlyLinked').checked) dagsAll.filter(n => n.unlinked && (!tagOn || hasTag(n)) && okDag(n)).forEach(n => dags.add(n.id));
+  // A link node stays while it joins two kept nodes, or nothing around it was filtered out.
+  const keep = new Set([...dags, ...DATA.nodes.filter(n => n.type !== 'dag').map(n => n.id)]);
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const id of [...keep]) {
+      if (!isLink(id)) continue;
+      const around = [...(outM.get(id) || []), ...(inM.get(id) || [])];
+      const kept = around.filter(x => keep.has(x)).length;
+      if (kept < 2 && kept < around.length) { keep.delete(id); changed = true; }
+    }
+  }
+  return keep;
+}
+
 function buildView() {
   const hideAssets = box('hideAssets').checked, onlyFail = box('onlyFail').checked;
-  let keep = new Set(DATA.nodes.map(n => n.id));
-  if (onlyFail) {
-    keep = new Set();
-    DATA.nodes.filter(failing).forEach(n => chain(n.id).forEach(x => keep.add(x)));
+  let keep = filtered();
+  if (onlyFail) {  // failing DAGs and their chains, within what the filters keep
+    const lit = new Set();
+    DATA.nodes.filter(n => keep.has(n.id) && failing(n)).forEach(n => chain(n.id).forEach(x => lit.add(x)));
+    keep = new Set([...keep].filter(id => lit.has(id)));
   }
   let es = DATA.edges.filter(e => keep.has(e.s) && keep.has(e.t));
   if (hideAssets) {  // collapse dag -> link(s) -> dag into dag -> dag; via = the last link on the way
@@ -187,7 +229,18 @@ function buildView() {
   nodes = [...keep].map(id => Object.assign({}, byId.get(id), prev.has(id) ? {x: prev.get(id).x, y: prev.get(id).y} : {}));
   nodeMap = new Map(nodes.map(n => [n.id, n]));
   links = es.map(e => ({source: e.s, target: e.t, via: e.via}));
+  const total = DATA.nodes.filter(n => n.type === 'dag').length, shown = nodes.filter(n => n.type === 'dag').length;
+  box('shown').textContent = `shown ${shown} of ${total} DAGs`;
   draw();
+}
+
+// Unlinked DAGs sit in a fixed grid below the force layout, outside the simulation.
+function placeUnlinked(list) {
+  const cw = 120, ch = 40, cols = Math.max(1, Math.floor((W() - 40) / cw));
+  list.sort((a, b) => a.label.localeCompare(b.label)).forEach((n, i) => {
+    n.x = n.fx = 20 + cw / 2 + (i % cols) * cw;
+    n.y = n.fy = H() + 40 + Math.floor(i / cols) * ch;
+  });
 }
 
 function draw() {
@@ -201,7 +254,7 @@ function draw() {
   const link = root.append('g').attr('stroke-opacity', .6).selectAll('line').data(links).join('line')
     .attr('stroke-width', 1.2).attr('marker-end', 'url(#arrow)');
   const node = root.append('g').selectAll('g').data(nodes, d => d.id).join('g').attr('class', 'n').style('cursor', 'pointer')
-    .call(d3.drag()
+    .call(d3.drag().filter((ev, d) => !d.unlinked && !ev.ctrlKey && !ev.button)
       .on('start', (ev, d) => { if (!ev.active) sim.alphaTarget(.3).restart(); d.fx = d.x; d.fy = d.y; })
       .on('drag', (ev, d) => { d.fx = ev.x; d.fy = ev.y; })
       .on('end', (ev, d) => { if (!ev.active) sim.alphaTarget(0); if (!d.pinned) { d.fx = null; d.fy = null; } }));
@@ -221,7 +274,9 @@ function draw() {
     .on('mouseleave', () => { tip.style.display = 'none'; })
     .on('click', (ev, d) => select(d.id))
     .on('dblclick', (ev, d) => { d.pinned = !d.pinned; if (!d.pinned) { d.fx = null; d.fy = null; } ev.stopPropagation(); });
-  sim = d3.forceSimulation(nodes)
+  const loose = nodes.filter(n => n.unlinked);
+  placeUnlinked(loose);
+  sim = d3.forceSimulation(nodes.filter(n => !n.unlinked))
     .force('link', d3.forceLink(links).id(d => d.id).distance(40).strength(.6))
     .force('charge', d3.forceManyBody().strength(-120))
     .force('center', d3.forceCenter(W() / 2, H() / 2))
@@ -233,12 +288,14 @@ function draw() {
       });
       node.attr('transform', d => `translate(${d.x},${d.y})`);
     });
+  node.filter(d => d.unlinked).attr('transform', d => `translate(${d.x},${d.y})`);
   applyHighlight();
 }
 
 function facts(d) {
   let f = '<span class="badge">' + esc(d.type) + '</span>';
   if (d.paused) f += ' <span class="badge">paused</span>';
+  (d.tags || []).forEach(t => { f += ` <span class="badge">#${esc(t)}</span>`; });
   if (d.fail) f += ` <span class="badge ${d.fail.kind === 'tests' ? 'warn' : 'crit'}">${d.fail.kind === 'tests' ? 'tests failed' : 'pipeline failed'}${d.fail.paused ? ' · paused' : ''}</span> ${esc(d.fail.date || '')}`;
   return f + `<br>↓ ${d.down} DAGs depend on it · ↑ waits for ${d.up} DAGs · edges: ${d.indeg} in / ${d.outdeg} out`;
 }
@@ -253,13 +310,18 @@ function renderSide(d, msg) {
     side.innerHTML = `<h2>${esc(msg || 'Click a node')}</h2><p class="hint">Node size shows how many DAGs depend on it, transitively. Click to highlight everything upstream and downstream. Double-click pins or releases a node. Scroll to zoom, drag to pan.<br><br>Search: <code>dag</code> focuses the first match, <code>+dag</code> adds its upstream, <code>dag+</code> its downstream, <code>2+dag+3</code> limits the depth.</p>`;
     return;
   }
+  const base = /^https?:\/\//.test(META.source || '') ? String(META.source).replace(/\/+$/, '') : '';
+  const openLink = d.type === 'dag' && base ? `<p><a href="${esc(base + '/dags/' + encodeURIComponent(d.id.slice(4)))}" ${LINK_TARGET}>Open in Airflow ↗</a></p>` : '';
+  if (d.unlinked) {
+    side.innerHTML = `<h2>${esc(d.label)}</h2><div>${facts(d)}</div><p class="hint">No explicit dependencies: no asset, trigger or sensor links this DAG to another.</p>` + openLink;
+    return;
+  }
   const down = dagList(d.id, outM), up = dagList(d.id, inM);
   const li = n => `<li data-id="${esc(n.id)}">${failing(n) ? '⚠ ' : ''}${esc(n.label)}${n.hl ? ' ★' : ''}</li>`;
-  const base = /^https?:\/\//.test(META.source || '') ? String(META.source).replace(/\/+$/, '') : '';
   side.innerHTML = `<h2>${esc(d.label)}</h2><div>${facts(d)}</div>` +
     `<h3>↓ Downstream (${down.length})</h3><ul>${down.map(li).join('') || '<li class="hint">none</li>'}</ul>` +
     `<h3>↑ Upstream (${up.length})</h3><ul>${up.map(li).join('') || '<li class="hint">none</li>'}</ul>` +
-    (d.type === 'dag' && base ? `<p><a href="${esc(base + '/dags/' + encodeURIComponent(d.id.slice(4)))}" ${LINK_TARGET}>Open in Airflow ↗</a></p>` : '');
+    openLink;
   side.querySelectorAll('li[data-id]').forEach(el => el.onclick = () => { select(el.dataset.id); fitTo([el.dataset.id]); });
 }
 
@@ -328,14 +390,18 @@ function runSearch(fit) {
   if (fit) fitTo(lastTargets);
 }
 
+const NEG = [['allLinks', 'onlyLinked'], ['paused', 'onlyActive'], ['allTags', 'onlyTags']];
 function syncHash() {  // keep the URL fragment in step with the toggles and the search text
   const parts = [];
   if (qEl.value.trim()) parts.push('q=' + encodeURIComponent(qEl.value.trim()));
   ['onlyFail', 'hideAssets', 'hl'].forEach(id => { if (box(id).checked) parts.push(id); });
+  // These default to on, so the hash carries their negation (conn defaults to off).
+  NEG.forEach(([flag, id]) => { if (!box(id).checked) parts.push(flag); });
+  if (box('conn').checked) parts.push('conn');
   try { history.replaceState(null, '', parts.length ? '#' + parts.join(',') : location.pathname + location.search); } catch (e) { /* file:// or sandboxed */ }
 }
 qEl.addEventListener('input', () => { runSearch(true); syncHash(); });
-['hideAssets', 'onlyFail'].forEach(id => box(id).addEventListener('change', () => { buildView(); syncHash(); }));
+['hideAssets', 'onlyFail', 'onlyLinked', 'onlyActive', 'onlyTags', 'conn'].forEach(id => box(id).addEventListener('change', () => { buildView(); syncHash(); }));
 box('hl').addEventListener('change', () => { applyHighlight(); syncHash(); });
 svg.on('click', ev => { if (ev.target === svg.node()) { selectedId = null; searchKeep = null; renderSide(null); applyHighlight(); } });
 if (window.matchMedia) {
@@ -344,11 +410,14 @@ if (window.matchMedia) {
 }
 
 if (!DATA.nodes.some(n => n.hl)) box('hlWrap').hidden = true;
+if (TAGS.length) box('tagLbl').textContent = 'only tags: ' + TAGS.join(', ');
+else { box('tagWrap').hidden = true; box('connWrap').hidden = true; }
 if (META.airflow_version) { box('ver').textContent = 'Airflow ' + META.airflow_version; box('ver').hidden = false; }
 
-// Hash flags: #q=<text>,onlyFail,hideAssets,hl (any subset)
+// Hash flags: #q=<text>,onlyFail,hideAssets,hl,allLinks,paused,allTags,conn (any subset)
 const flags = location.hash.replace(/^#/, '').split(',').filter(Boolean);
-['hideAssets', 'onlyFail', 'hl'].forEach(id => { if (flags.includes(id)) box(id).checked = true; });
+['hideAssets', 'onlyFail', 'hl', 'conn'].forEach(id => { if (flags.includes(id)) box(id).checked = true; });
+NEG.forEach(([flag, id]) => { if (flags.includes(flag)) box(id).checked = false; });
 renderSide(null);
 buildView();
 const qf = flags.find(f => f.startsWith('q='));

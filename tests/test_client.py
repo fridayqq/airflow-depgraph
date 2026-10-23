@@ -102,3 +102,21 @@ def test_timeout_and_os_error_are_api_errors():
         AirflowClient(URL, "t", opener=_raw_opener(exc=TimeoutError())).dependencies()
     with pytest.raises(ApiError, match="network error"):
         AirflowClient(URL, "t", opener=_raw_opener(exc=ConnectionResetError("reset"))).dependencies()
+
+
+def test_list_dags_paginates_until_short_page():
+    import urllib.parse
+    from tests.conftest import _Resp
+    seen = []
+
+    def opener(req, timeout=None):
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(req.full_url).query)
+        offset = int(q["offset"][0])
+        seen.append((urllib.parse.urlsplit(req.full_url).path, int(q["limit"][0]), offset))
+        n = 100 if offset == 0 else 3
+        return _Resp(json.dumps({"dags": [{"dag_id": f"d{offset + i}"} for i in range(n)]}).encode())
+
+    dags = AirflowClient(URL, "t", opener=opener).list_dags()
+    assert len(dags) == 103 and dags[-1]["dag_id"] == "d102"
+    assert [s[0] for s in seen] == ["/api/v2/dags"] * 2
+    assert [(s[1], s[2]) for s in seen] == [(100, 0), (100, 100)]

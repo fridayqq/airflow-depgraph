@@ -31,6 +31,9 @@ class FakeClient:
     def version(self):
         return "3.1.5"
 
+    def list_dags(self):
+        return [{"dag_id": "a", "tags": [{"name": "team-a"}]}, {"dag_id": "lonely", "tags": []}]
+
 
 @pytest.fixture(autouse=True)
 def _reset():
@@ -145,3 +148,18 @@ def test_cli_never_imports_airflow():
     code = "import sys, airflow_depgraph.cli; print('airflow' in sys.modules, 'fastapi' in sys.modules)"
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert out.stdout.strip() == "False False"
+
+
+def test_page_includes_catalog_unlinked_dags():
+    b = PageBuilder("u", Settings(tags=("team-a",)), client_factory=FakeClient)
+    html = b.page("tok", None, False)
+    assert '"id": "dag:lonely"' in html and '"unlinked": true' in html
+    assert '"tags": ["team-a"]' in html
+
+
+def test_page_without_catalog_still_renders():
+    class NoCatalog(FakeClient):
+        def list_dags(self):
+            raise ApiError("403 on /api/v2/dags: reason", 403, "/api/v2/dags")
+    html = PageBuilder("u", Settings(), client_factory=NoCatalog).page("tok", None, False)
+    assert "dag:b" in html and "dag:lonely" not in html

@@ -74,10 +74,29 @@ class Snapshot:
     nodes: list[dict]
     edges: list[dict]
     dags: dict[str, dict] | None = None
+    catalog: dict[str, dict] | None = None
 
     @cached_property
     def graph(self) -> Graph:
         return Graph.from_payload(self.nodes, self.edges)
+
+
+def _tag_name(tag: object) -> str:
+    return str(tag.get("name", "")) if isinstance(tag, dict) else str(tag)
+
+
+def build_catalog(dags: list[dict]) -> dict[str, dict]:
+    """{dag_id: tags/is_paused/is_stale/schedule/owners} from GET /api/v2/dags items."""
+    return {
+        d["dag_id"]: {
+            "tags": [_tag_name(t) for t in d.get("tags") or []],
+            "is_paused": bool(d.get("is_paused")),
+            "is_stale": bool(d.get("is_stale")),
+            "schedule": d.get("timetable_summary") or d.get("timetable_description") or None,
+            "owners": d.get("owners") or [],
+        }
+        for d in dags if isinstance(d, dict) and d.get("dag_id")
+    }
 
 
 def load(path: Path) -> Snapshot:
@@ -101,6 +120,7 @@ def load(path: Path) -> Snapshot:
         nodes=nodes,
         edges=edges,
         dags=data.get("dags"),
+        catalog=data.get("catalog"),
     )
 
 
@@ -115,6 +135,8 @@ def dump(snap: Snapshot, path: Path) -> None:
     }
     if snap.dags is not None:
         payload["dags"] = snap.dags
+    if snap.catalog is not None:
+        payload["catalog"] = snap.catalog
 
     path = Path(path)
     tmp = path.with_name(path.name + ".tmp")
