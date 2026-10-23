@@ -62,7 +62,11 @@ def _one(client: AirflowClient, dag_id: str, s: Settings, with_tasks: bool,
         "last_run": asdict(last) if last else None,
     }
     if with_tasks:
-        out["tasks"] = [t["task_id"] for t in client.tasks(dag_id)]
+        try:
+            out["tasks"] = [t["task_id"] for t in client.tasks(dag_id)]
+        except Exception as exc:  # a task-list failure keeps the status, without tasks
+            if isinstance(exc, ApiError) and exc.status == 401:
+                raise
     return out
 
 

@@ -142,3 +142,16 @@ def test_fetch_status_stops_on_401():
         fetch_status(_ExpiredToken(), ["dag_a", "dag_401", "dag_b"], Settings(),
                      with_tasks=False, workers=1)
     assert ei.value.status == 401
+
+
+def test_task_list_error_keeps_status_and_omits_tasks():
+    class Forbidden(FakeClient):
+        def tasks(self, dag_id):
+            if dag_id == "dag_403":
+                raise ApiError("403 on /tasks", 403, "/tasks")
+            return super().tasks(dag_id)
+    out = fetch_status(Forbidden(), ["dag_a", "dag_403"], Settings(), with_tasks=True, workers=2)
+    assert "error" not in out["dag_403"]
+    assert out["dag_403"]["last_run"]["state"] == "success"
+    assert "tasks" not in out["dag_403"]
+    assert out["dag_a"]["tasks"] == ["a", "b"]

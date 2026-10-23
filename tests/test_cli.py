@@ -507,3 +507,27 @@ def test_stale_catalog_dag_gets_unlinked_error_not_no_dependencies(tmp_path, cap
     captured = capsys.readouterr()
     assert "is not in the dependency graph" in captured.err
     assert "exists but has no explicit dependencies" not in captured.out
+
+
+def test_walk_keyerror_for_existing_node_propagates(monkeypatch):
+    def broken_walk(g, start, direction, depth):
+        raise KeyError("x")
+    monkeypatch.setattr(cli, "walk", broken_walk)
+    with pytest.raises(KeyError):
+        cli.main(["downstream", "dag_e", FIX])
+
+
+def test_status_task_list_error_warns_and_keeps_status(tmp_path, live, monkeypatch, capsys):
+    from airflow_depgraph.client import ApiError
+
+    def tasks(self, dag_id):
+        if dag_id == "y":
+            raise ApiError("403 on /tasks", 403, "/tasks")
+        return [{"task_id": "refresh_dashboard"}]
+    monkeypatch.setattr(FakeClient, "tasks", tasks)
+    out = tmp_path / "s.json"
+    assert cli.main(["fetch", "--url", URL, "-o", str(out), "--with-status", "--with-tasks"]) == 0
+    data = json.loads(out.read_text())
+    assert "last_run" in data["dags"]["y"] and "tasks" not in data["dags"]["y"]
+    assert data["dags"]["x"]["tasks"] == ["refresh_dashboard"]
+    assert "warning: task list unavailable for 1 DAGs" in capsys.readouterr().err

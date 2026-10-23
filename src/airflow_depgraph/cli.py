@@ -119,6 +119,11 @@ def _fetch_dags(client: AirflowClient, snap: Snapshot, s: Settings,
         if errors:
             print(f"warning: status unavailable for {len(errors)} of {len(ids)} DAGs "
                   f"(first error: {errors[0]})", file=sys.stderr)
+        if s.with_tasks:
+            no_tasks = [d for d in ids if "error" not in result.get(d, {})
+                        and "tasks" not in result.get(d, {})]
+            if no_tasks:
+                print(f"warning: task list unavailable for {len(no_tasks)} DAGs", file=sys.stderr)
         return result
     if s.with_tasks:
         tasks_by_dag = dict(tasks_by_dag or {})
