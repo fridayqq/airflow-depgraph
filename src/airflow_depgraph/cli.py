@@ -68,13 +68,14 @@ def _settings(args: argparse.Namespace) -> Settings:
     return resolve(cli, os.environ, args.preset)
 
 
-def _client(s: Settings, args: argparse.Namespace) -> AirflowClient:
+def _client(s: Settings, args: argparse.Namespace, env=None) -> AirflowClient:
+    env = os.environ if env is None else env
     if not s.url:
         raise CliError("no Airflow URL: pass --url, set AIRFLOW_DEPGRAPH_URL or use a preset")
     if s.token:
         return AirflowClient(s.url, token=s.token, timeout=s.timeout)
-    user = resolve_user(s, os.environ)
-    password = resolve_password(s, os.environ, stdin_password=args.password_stdin,
+    user = resolve_user(s, env)
+    password = resolve_password(s, env, stdin_password=args.password_stdin,
                                 stdin=sys.stdin, isatty=sys.stdin.isatty())
     return AirflowClient.login(s.url, user, password, timeout=s.timeout)
 
@@ -469,13 +470,17 @@ def _tty() -> bool:
 def cmd_init(args: argparse.Namespace) -> int:
     if args.json and not args.discover:
         raise UsageError("--json only works with --discover")
-    if args.discover:
-        return _init_discover(args)
+    if args.discover and (args.yes or args.name or args.force):
+        raise UsageError("--discover only reads: it cannot be combined with --yes, NAME or --force")
     given = _init_given(args)
     try:
         wizard.validate_given(given)
     except ValueError as exc:
         raise UsageError(str(exc)) from None
+    if args.discover:
+        return _init_discover(args)
+    if not args.yes and (args.password_stdin or args.token_stdin):
+        raise UsageError("--password-stdin/--token-stdin need --yes or --discover")
     if not args.yes and not _tty():
         raise UsageError("init asks questions; run it in a terminal, "
                          "or pass --yes with flags (see --help)")
@@ -483,7 +488,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     try:
         if args.yes:
             return _init_batch(args, given, target)
-        color = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+        color = sys.stdout.isatty() and "NO_COLOR" not in os.environ
         prompter = wizard.Prompter(input_fn=input, getpass_fn=getpass.getpass,
                                    out=sys.stdout, color=color)
         return wizard.run_interactive(
@@ -501,6 +506,10 @@ def _init_token(args: argparse.Namespace) -> str | None:
 def _init_discover(args: argparse.Namespace) -> int:
     if not args.url:
         raise UsageError("--discover needs --url")
+    try:
+        args.url = wizard.normalize_url(args.url)
+    except ValueError as exc:
+        raise UsageError(str(exc)) from None
     s = _settings(args)
     d = wizard.discover(_client(s, args), s)
     print(json.dumps(d.to_json(), indent=2, ensure_ascii=False) if args.json
@@ -521,20 +530,28 @@ def _init_batch(args: argparse.Namespace, given: dict, target: Path) -> int:
     path = target / f"{name}.toml"
     if path.exists() and not args.force:
         raise FileExistsError(f"{path} already exists; pass --force to overwrite it")
+    env = os.environ
+    shadow = Settings.password_env
+    if given["password_cmd"] and not given["password_env"] and shadow in env:
+        print(f"warning: {wizard.shadow_warning(shadow)}", file=sys.stderr)
+        env = {k: v for k, v in env.items() if k != shadow}   # the check runs the command
     if not args.no_check:
         wizard.check_health(AirflowClient, url, given["timeout"] or Settings.timeout)
         args.url = url
         s = _settings(args)
-        client = _client(s, args)
+        client = _client(s, args, env)
         if given["tags"]:
-            known = {t for t, _ in wizard.tag_counts(client.list_dags())}
-            for tag in given["tags"]:
-                if tag not in known:
-                    print(f"warning: no DAG has tag {tag}", file=sys.stderr)
+            try:
+                known = {t for t, _ in wizard.tag_counts(client.list_dags())}
+            except ApiError as exc:
+                print(f"warning: cannot list DAGs ({exc}); tags not checked", file=sys.stderr)
+            else:
+                for tag in given["tags"]:
+                    if tag not in known:
+                        print(f"warning: no DAG has tag {tag}", file=sys.stderr)
     values = wizard.build_values(name, url, given)
     wizard.write_preset(path, wizard.render_preset(values), force=args.force)
-    print(wizard.written_message(path, name, values, os.environ,
-                                 wizard.in_lookup_dirs(target, os.environ)))
+    print(wizard.written_message(path, name, values, os.environ))
     return 0
 
 

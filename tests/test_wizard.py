@@ -445,7 +445,7 @@ def test_sign_in_failure_retry_then_skip(tmp_path):
 def test_sign_in_quit_writes_nothing(tmp_path):
     bad = ApiError("authentication failed (401)", 401, "/auth/token")
     p, _, out = prompter(["p1", URL, "U", "1", "P", "q"])
-    assert run(p, tmp_path, client=fake(login_errors=[bad]), env={"U": "a", "P": PW}) == 130
+    assert run(p, tmp_path, client=fake(login_errors=[bad]), env={"U": "a", "P": PW}) == 1
     assert not (tmp_path / "presets").exists()
 
 
@@ -468,7 +468,7 @@ def test_interrupt_midway_writes_nothing(tmp_path, fail):
 def test_declining_the_final_confirmation_writes_nothing(tmp_path):
     given = {"name": "p1", "url": URL, "user_env": "U", "password_env": "P"}
     p, _, out = prompter(["-", "0", "n", "n", "", "", "n", "n"], final=False)
-    assert run(p, tmp_path, given, env={"U": "a", "P": PW}) == 130
+    assert run(p, tmp_path, given, env={"U": "a", "P": PW}) == 1
     assert not (tmp_path / "presets" / "p1.toml").exists()
     assert "not written" in out.getvalue()
 
@@ -512,19 +512,21 @@ def test_yes_bad_flag_values_are_usage_errors(tmp_path, live, capsys):
 def test_yes_happy_path(tmp_path, live, capsys):
     argv = yes(tmp_path, "p1", "--url", URL + "/", "--tag", "team-a", "--tag", "nope",
                "--strip-prefix", "s3://bucket/", "--with-status", "--title", "T",
-               "--lookback", "3", "--password-cmd", "pass show x", "--highlight", "^o")
+               "--lookback", "3", "--password-cmd", "echo hunter2", "--highlight", "^o")
     assert cli.main(argv) == 0
     cap = capsys.readouterr()
     path = tmp_path / "d" / "p1.toml"
     assert load(path) == {
         "name": "p1", "url": URL, "user_env": "AIRFLOW_DEPGRAPH_USER",
-        "password_cmd": "pass show x", "with_status": True, "infer_sensors": False,
+        "password_cmd": "echo hunter2", "with_status": True, "infer_sensors": False,
         "tags": ["team-a", "nope"], "title": "T",
         "asset_label_strip_prefix": "s3://bucket/", "highlight": "^o",
         "status_runs_lookback": 3}
     assert "warning: no DAG has tag nope" in cap.err and "tag team-a" not in cap.err
     assert f"wrote {path}" in cap.out and "Next:" in cap.out
-    assert live.logins == [(URL, "u", PW)]
+    # the command was run for the check, not the (set) default password variable
+    assert live.logins == [(URL, "u", "hunter2")]
+    assert "AIRFLOW_DEPGRAPH_PASSWORD is set and is read before password_cmd" in cap.err
     assert PW not in cap.out + cap.err + path.read_text()
     assert path.stat().st_mode & 0o777 == 0o644
 
@@ -672,3 +674,238 @@ def test_init_help_has_examples(capsys):
     with pytest.raises(SystemExit):
         cli.main(["init", "--help"])
     assert "Examples:" in capsys.readouterr().out
+
+
+# ---------- fix round 1 ----------
+
+
+def _fixed_run_cmd(monkeypatch, out):
+    import airflow_depgraph.wizard as w
+    orig = w.resolve_password
+    ran = []
+
+    def run_cmd(cmd, **kw):
+        ran.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": out + "\n", "stderr": ""})()
+    monkeypatch.setattr(w, "resolve_password", lambda *a, **k: orig(*a, run_cmd=run_cmd, **k))
+    return ran
+
+
+def test_command_source_is_checked_even_when_default_env_var_is_set(tmp_path, monkeypatch):
+    ran = _fixed_run_cmd(monkeypatch, "from-cmd")
+    fk = fake()
+    answers = ["p1", URL, "U", "2", "pass show a", "-", "0", "n", "n", "", "", "n"]
+    p, _, out = prompter(answers)
+    env = {"U": "bob", "AIRFLOW_DEPGRAPH_PASSWORD": "unrelated"}
+    assert run(p, tmp_path, client=fk, env=env) == 0
+    assert ran == ["pass show a"] and fk.logins == [(URL, "bob", "from-cmd")]
+    assert "$AIRFLOW_DEPGRAPH_PASSWORD is set and is read before password_cmd" in out.getvalue()
+    assert "password_env" not in load(tmp_path / "presets" / "p1.toml")
+
+
+def test_no_shadow_warning_when_default_env_var_is_unset(tmp_path, monkeypatch):
+    _fixed_run_cmd(monkeypatch, "x")
+    p, _, out = prompter(["p1", URL, "U", "2", "pass show a", "-", "0", "n", "n", "", "", "n"])
+    assert run(p, tmp_path, env={"U": "bob"}) == 0
+    assert "is read before password_cmd" not in out.getvalue()
+
+
+def test_failing_password_cmd_offers_retry_and_never_prints_secrets(tmp_path, monkeypatch):
+    import airflow_depgraph.wizard as w
+    orig = w.resolve_password
+
+    def run_cmd(cmd, **kw):
+        return type("R", (), {"returncode": 1, "stdout": PW, "stderr": "no such entry"})()
+    monkeypatch.setattr(w, "resolve_password", lambda *a, **k: orig(*a, run_cmd=run_cmd, **k))
+    answers = ["p1", URL, "U", "2", "pass show a", "s", "-", "0", "n", "n", "", "", "n"]
+    p, script, out = prompter(answers)
+    assert run(p, tmp_path, env={"U": "bob"}) == 0
+    text = out.getvalue()
+    assert "password_cmd failed (1): no such entry" in text and PW not in text
+    assert any(q.startswith("r) retry  s) skip") for q in script.prompts)   # no "type" option
+
+
+def test_retry_asks_the_user_again_and_offers_typing_the_password(tmp_path):
+    bad = ApiError("authentication failed (401): check username/password", 401, "/auth/token")
+    fk = fake(login_errors=[bad])
+    answers = ["p1", URL, "U", "1", "P", "bob",       # first user
+               "t", "bobby",                          # type the password; user asked again
+               "-", "0", "n", "n", "", "", "n"]
+    p, script, out = prompter(answers, passwords=[PW])
+    env = {"P": "wrong"}
+    assert run(p, tmp_path, client=fk, env=env) == 0
+    assert fk.logins == [(URL, "bob", "wrong"), (URL, "bobby", PW)]
+    retry = [q for q in script.prompts if q.startswith("r) retry")][0]
+    assert "t) type the password" in retry
+    assert "$P is read again on retry and will not change" in out.getvalue()
+    again = [q for q in script.prompts if q.startswith("User name")]
+    assert again == ["User name (for this check only, not stored): ",
+                     "User name (for this check only, not stored) [bob]: "]
+    assert PW not in out.getvalue()
+
+
+def test_stdin_flags_are_rejected_without_yes(tmp_path, live, capsys):
+    for flag in ("--password-stdin", "--token-stdin"):
+        assert cli.main(["init", flag, "--dir", str(tmp_path / "d")]) == 2
+        assert "--password-stdin/--token-stdin need --yes or --discover" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("none", ["-", "0", ""])
+def test_free_text_none_answers_without_candidates(tmp_path, none):
+    class NoPrefixes(FakeAirflow):
+        def dependencies(self, node_id=None):
+            return {"nodes": [{"id": "dag:a", "label": "a", "type": "dag"}], "edges": []}
+    given = {"name": "p1", "url": URL, "user_env": "U", "password_env": "P"}
+    answers = ["-", none, "n", "n", none, "", "n"]    # tags, prefix, status, sensors, hl, title
+    p, script, _ = prompter(answers)
+    assert run(p, tmp_path, given, client=fake_from(NoPrefixes), env={"U": "a", "P": PW}) == 0
+    data = load(tmp_path / "presets" / "p1.toml")
+    assert "asset_label_strip_prefix" not in data and "highlight" not in data
+    assert "Asset label prefix to strip, - for none: " in script.prompts or \
+        any("- for none" in q for q in script.prompts)
+
+
+def fake_from(base):
+    return type("F", (base,), {"login_errors": [], "logins": []})
+
+
+def _given():
+    return {"name": "p1", "url": URL, "user_env": "U", "password_env": "P"}
+
+
+def test_numbered_prefix_choice_and_out_of_range(tmp_path):
+    answers = ["-", "9", "abc-not-a-number", "n", "n", "", "", "n"]
+    # 9 is out of range -> asked again; the text is then taken literally
+    p, _, out = prompter(answers)
+    assert run(p, tmp_path, _given(), env={"U": "a", "P": PW}) == 0
+    assert "no prefix number 9" in out.getvalue()
+    assert load(tmp_path / "presets" / "p1.toml")["asset_label_strip_prefix"] == "abc-not-a-number"
+
+
+def test_highlight_decline_and_reenter_and_invalid_regex(tmp_path):
+    answers = ["-", "0", "n", "n",
+               "(", "^orders_", "n",          # invalid, then a regex that is declined
+               "^other", "y",                 # accepted
+               "", "", "n"]                   # label default, title default, no advanced
+    p, _, out = prompter(answers)
+    assert run(p, tmp_path, _given(), env={"U": "a", "P": PW}) == 0
+    text = out.getvalue()
+    assert "invalid regex '('" in text
+    assert "matches 3 DAGs" in text and "matches 1 DAG: other" in text
+    assert load(tmp_path / "presets" / "p1.toml")["highlight"] == "^other"
+
+
+def test_advanced_reasks_on_invalid_and_default_writes_nothing(tmp_path):
+    answers = ["-", "0", "n", "n", "", "",
+               "y",
+               "(", "tests",                  # regex: invalid then valid
+               "",                            # task_query_regex: none
+               "0", "abc", "5",               # lookback: below minimum, not a number, the default
+               "nan", "inf", "-1", "25",      # timeout: rejected x3, then the default
+               "0", "6"]                      # workers: rejected, then 6
+    p, _, out = prompter(answers)
+    assert run(p, tmp_path, _given(), env={"U": "a", "P": PW}) == 0
+    data = load(tmp_path / "presets" / "p1.toml")
+    assert data["tests_task_regex"] == "tests" and data["workers"] == 6
+    assert "timeout" not in data and "status_runs_lookback" not in data
+    assert "task_query_regex" not in data
+    assert "timeout must be" in out.getvalue()
+
+
+def test_timeout_must_be_finite():
+    for bad in (float("nan"), float("inf"), 0.0, -1.0):
+        with pytest.raises(ValueError):
+            wizard.validate_given({"timeout": bad})
+
+
+def test_cli_rejects_nan_timeout(tmp_path, live, capsys):
+    assert cli.main(yes(tmp_path, "p1", "--url", URL, "--timeout", "nan")) == 2
+    assert cli.main(["init", "--discover", "--url", URL, "--timeout", "inf"]) == 2
+
+
+def test_tag_warning_in_interactive_mode(tmp_path):
+    given = {**_given(), "tags": ["team-a", "nope"]}
+    p, _, out = prompter(["0", "n", "n", "", "", "n"])
+    assert run(p, tmp_path, given, env={"U": "a", "P": PW}) == 0
+    assert "no DAG has tag nope" in out.getvalue()
+    assert "no DAG has tag team-a" not in out.getvalue()
+
+
+def test_interrupt_inside_write_leaves_no_temp_file(tmp_path, monkeypatch):
+    import os as _os
+
+    def boom(src, dst):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(_os, "replace", boom)
+    path = tmp_path / "d" / "p.toml"
+    with pytest.raises(KeyboardInterrupt):
+        wizard.write_preset(path, "x = 1\n")
+    assert list(path.parent.iterdir()) == []
+
+
+def test_next_block_uses_the_name_only_when_it_resolves_to_the_file(tmp_path):
+    values = {"user_env": "U", "password_env": "P"}
+    lookup = tmp_path / "xdg" / "airflow-depgraph" / "presets"
+    path = lookup / "p1.toml"
+    wizard.write_preset(path, "name = \"p1\"\n")
+    env = {"XDG_CONFIG_HOME": str(tmp_path / "xdg"), "U": "a", "P": "b"}
+    assert "--preset p1\n" in wizard.written_message(path, "p1", values, env) + "\n"
+    # a different directory with the same name: another file would win, so use the path
+    other = tmp_path / "other" / "p1.toml"
+    wizard.write_preset(other, "name = \"p1\"\n")
+    assert f"--preset {other}" in wizard.written_message(other, "p1", values, env)
+    # not found anywhere in the lookup dirs
+    elsewhere = tmp_path / "e" / "zz.toml"
+    wizard.write_preset(elsewhere, "")
+    assert f"--preset {elsewhere}" in wizard.written_message(elsewhere, "zz", values, env)
+
+
+def test_discover_normalises_the_url(tmp_path, live, capsys):
+    assert cli.main(["init", "--discover", "--json", "--url", URL + "/"]) == 0
+    assert json.loads(capsys.readouterr().out)["url"] == URL
+    assert cli.main(["init", "--discover", "--url", "airflow.example.com"]) == 2
+
+
+@pytest.mark.parametrize("extra", [["--yes"], ["p1"], ["--force"]])
+def test_discover_cannot_be_combined(live, extra, capsys):
+    assert cli.main(["init", "--discover", "--url", URL, *extra]) == 2
+    assert "--discover" in capsys.readouterr().err
+
+
+def test_yes_tags_survive_a_failing_list_dags(tmp_path, monkeypatch, capsys):
+    class Forbidden(FakeAirflow):
+        logins: list = []
+
+        def list_dags(self):
+            raise ApiError("403 on /api/v2/dags: Forbidden", 403, "/api/v2/dags")
+    monkeypatch.setattr(cli, "AirflowClient", Forbidden)
+    monkeypatch.setenv("AIRFLOW_DEPGRAPH_USER", "u")
+    monkeypatch.setenv("AIRFLOW_DEPGRAPH_PASSWORD", PW)
+    assert cli.main(yes(tmp_path, "p1", "--url", URL, "--tag", "team-a")) == 0
+    assert "warning: cannot list DAGs" in capsys.readouterr().err
+    assert load(tmp_path / "d" / "p1.toml")["tags"] == ["team-a"]
+
+
+def test_yes_shadow_warning_even_without_check(tmp_path, live, capsys):
+    assert cli.main(yes(tmp_path, "p1", "--url", URL, "--no-check", "--password-cmd", "x")) == 0
+    assert "is read before password_cmd" in capsys.readouterr().err
+
+
+def test_color_only_when_no_color_is_unset(tmp_path, live, monkeypatch):
+    seen = []
+    monkeypatch.setattr(cli, "_tty", lambda: True)
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True, raising=False)
+
+    def spy(prompter, *a, **k):
+        seen.append(prompter.color)
+        return 0
+    monkeypatch.setattr(cli.wizard, "run_interactive", spy)
+    cli.main(["init", "--dir", str(tmp_path)])
+    monkeypatch.setenv("NO_COLOR", "")
+    cli.main(["init", "--dir", str(tmp_path)])
+    assert seen == [True, False]
+
+
+def test_plurals():
+    assert wizard.plural(1, "asset") == "1 asset" and wizard.plural(0, "DAG") == "0 DAGs"
+    assert wizard.plural(2, "sensor node") == "2 sensor nodes"

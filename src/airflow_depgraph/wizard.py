@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import getpass
+import math
 import os
 import re
 import sys
@@ -18,7 +19,7 @@ from typing import TextIO
 from airflow_depgraph import snapshot as snapmod
 from airflow_depgraph.auth import CredentialsError, resolve_password, resolve_user
 from airflow_depgraph.client import ApiError
-from airflow_depgraph.presets import PRESET_KEYS, Settings, _lookup_dirs
+from airflow_depgraph.presets import PRESET_KEYS, PresetError, Settings, _lookup_dirs, find_preset
 from airflow_depgraph.snapshot import SnapshotError
 
 DEFAULT_NAME = "prod"
@@ -117,8 +118,9 @@ def validate_given(given: Mapping[str, object]) -> None:
             validate_regex(str(given[key]))
     if given.get("lookback") is not None and given["lookback"] < 1:
         raise ValueError("--lookback must be at least 1")
-    if given.get("timeout") is not None and given["timeout"] <= 0:
-        raise ValueError("--timeout must be greater than 0")
+    if given.get("timeout") is not None and not (math.isfinite(given["timeout"])
+                                                 and given["timeout"] > 0):
+        raise ValueError("--timeout must be a finite number greater than 0")
     if given.get("workers") is not None and given["workers"] < 1:
         raise ValueError("--workers must be at least 1")
 
@@ -160,6 +162,15 @@ def asset_prefixes(labels: list[str], top: int = 5) -> list[tuple[str, int]]:
 
 def sensor_count(nodes: list[dict]) -> int:
     return sum(1 for n in nodes if n.get("type") == "sensor")
+
+
+def plural(n: int, noun: str) -> str:
+    return f"{n} {noun}" + ("" if n == 1 else "s")
+
+
+def shadow_warning(name: str) -> str:
+    return (f"${name} is set and is read before password_cmd; "
+            "unset it or choose a different variable name")
 
 
 def suggest_with_status(n_dags: int) -> bool:
@@ -327,10 +338,6 @@ def target_dir(dir_arg: str | None, env: Mapping[str, str]) -> Path:
     return _lookup_dirs(env)[0]
 
 
-def in_lookup_dirs(target: Path, env: Mapping[str, str]) -> bool:
-    return target in _lookup_dirs(env)
-
-
 def write_preset(path: Path, text: str, force: bool = False) -> None:
     path = Path(path)
     if path.exists() and not force:
@@ -354,13 +361,17 @@ def _tilde(path: Path) -> str:
 
 
 def written_message(path: Path, name: str, values: Mapping[str, object],
-                    env: Mapping[str, str], dir_in_lookup: bool) -> str:
+                    env: Mapping[str, str]) -> str:
     lines = [f"✓ wrote {_tilde(path)}", "", "Next:"]
     if values["user_env"] not in env:
         lines.append(f"  export {values['user_env']}=…")
     if "password_cmd" not in values and values["password_env"] not in env:
         lines.append(f"  export {values['password_env']}=…")
-    ref = name if dir_in_lookup else str(path)
+    try:
+        found = find_preset(name, env).resolve() == path.resolve()
+    except PresetError:
+        found = False
+    ref = name if found else str(path)
     lines.append(f"  airflow-depgraph presets --preset {ref}")
     lines.append(f"  airflow-depgraph graph --preset {ref} -o graph.html")
     return "\n".join(lines)
@@ -475,13 +486,12 @@ def _positive(kind: Callable, label: str, minimum: float, strict: bool = False):
 def run_interactive(p: Prompter, given: Mapping[str, object], *, env: Mapping[str, str],
                     target: Path, client_cls, user: str | None = None, token: str | None = None,
                     force: bool = False, no_check: bool = False) -> int:
-    """Ask the questions, write the preset. Returns the exit code (130 when nothing was written
-    by choice); Ctrl-C and EOF propagate as KeyboardInterrupt/EOFError."""
+    """Ask the questions, write the preset. Returns the exit code (1 when the user chose not to
+    write); Ctrl-C and EOF propagate as KeyboardInterrupt/EOFError."""
     p.say("airflow-depgraph init — new preset")
     p.dim("Ctrl-C to quit, nothing is written until the end.")
     chosen: dict[str, object] = {}
     timeout = given.get("timeout") or float(_DEFAULTS["timeout"])
-    in_lookup = in_lookup_dirs(target, env)
 
     p.say("\n[1/7] Name")
     name, overwrite = _ask_name(p, given.get("name"), target, force)
@@ -512,9 +522,13 @@ def run_interactive(p: Prompter, given: Mapping[str, object], *, env: Mapping[st
     if no_check:
         p.dim("skipped (--no-check): no suggestions from Airflow")
     else:
-        client = _sign_in(p, settings, env, client_cls)
+        check_env = env
+        if chosen.get("password_cmd") and not chosen.get("password_env"):
+            # the check must run the command, not pick up an unrelated default variable
+            check_env = {k: v for k, v in env.items() if k != settings.password_env}
+        client = _sign_in(p, settings, check_env, client_cls)
     if client is False:     # the user chose to quit
-        return 130
+        return 1
 
     p.say("\n[6/7] Choices")
     disc = None
@@ -522,8 +536,9 @@ def run_interactive(p: Prompter, given: Mapping[str, object], *, env: Mapping[st
         p.dim("reading DAGs and dependencies…")
         try:
             disc = discover(client, settings)
-            p.ok(f"{disc.dags_total} DAGs ({disc.dags_active} active, {disc.dags_paused} paused), "
-                 f"{disc.assets} assets, {disc.sensor_nodes} sensor nodes")
+            p.ok(f"{plural(disc.dags_total, 'DAG')} ({disc.dags_active} active, "
+                 f"{disc.dags_paused} paused), {plural(disc.assets, 'asset')}, "
+                 f"{plural(disc.sensor_nodes, 'sensor node')}")
         except (ApiError, SnapshotError) as exc:
             p.warn(f"discovery failed ({exc}); asking without suggestions")
     _ask_choices(p, given, chosen, disc)
@@ -538,10 +553,10 @@ def run_interactive(p: Prompter, given: Mapping[str, object], *, env: Mapping[st
     p.say(text)
     if not p.confirm("Write it?", True):
         p.say("not written")
-        return 130
+        return 1
     write_preset(path, text, force=overwrite or force)
     p.say()
-    p.say(written_message(path, name, values, env, in_lookup))
+    p.say(written_message(path, name, values, env))
     return 0
 
 
@@ -629,12 +644,15 @@ def _ask_password_source(p: Prompter, given: Mapping[str, object], chosen: dict,
                   "     security find-generic-password -s airflow -w\n"
                   "     op read op://vault/airflow/password")
             chosen["password_cmd"] = p.ask("Command that prints the password")
+        if penv is None and _DEFAULTS["password_env"] in env:
+            p.warn(shadow_warning(_DEFAULTS["password_env"]))
     p.dim("The password itself is never stored.")
 
 
 def _sign_in(p: Prompter, s: Settings, env: Mapping[str, str], client_cls):
     """A logged-in client, None when the user skips the check, False when they quit."""
     typed_user = None
+    typed_pw = False
     if s.token:
         client = client_cls(s.url, token=s.token, timeout=s.timeout)
         p.ok("using the bearer token from the flags")
@@ -647,23 +665,35 @@ def _sign_in(p: Prompter, s: Settings, env: Mapping[str, str], client_cls):
             try:
                 user = resolve_user(s, env)
             except CredentialsError:
-                typed_user = typed_user or p.ask("User name (for this check only, not stored)")
+                typed_user = p.ask("User name (for this check only, not stored)", typed_user)
                 user = typed_user
-            password = resolve_password(s, env, stdin_password=False, stdin=None, isatty=True,
-                                        prompt=lambda _prompt: p.password())
+            if typed_pw:
+                password = p.password()
+            else:
+                password = resolve_password(s, env, stdin_password=False, stdin=None,
+                                            isatty=True, prompt=lambda _prompt: p.password())
             client = client_cls.login(s.url, user, password, timeout=s.timeout)
             version = client.version()
             p.ok(f"signed in as {user} — Airflow {version or '(version unknown)'}")
             return client
         except (ApiError, CredentialsError) as exc:
             p.bad(str(exc))
-            answer = p.ask("r) retry  s) skip checks (no suggestions)  q) quit", "r",
-                           _choice("rsq"))
+            from_env = not typed_pw and not s.password_cmd and s.password_env in env
+            letters = "rsq"
+            menu = "r) retry  s) skip checks (no suggestions)  q) quit"
+            if from_env:
+                p.dim(f"${s.password_env} is read again on retry and will not change.")
+                letters = "rtsq"
+                menu = ("r) retry  t) type the password for this check  "
+                        "s) skip checks (no suggestions)  q) quit")
+            answer = p.ask(menu, "r", _choice(letters))
             if answer == "q":
-                p.say("quit, nothing written")
+                p.say("not written")
                 return False
             if answer == "s":
                 return None
+            if answer == "t":
+                typed_pw = True
 
 
 def _ask_choices(p: Prompter, given: Mapping[str, object], chosen: dict, disc) -> None:
@@ -697,10 +727,12 @@ def _ask_choices(p: Prompter, given: Mapping[str, object], chosen: dict, disc) -
         p.say("Asset label prefix to strip:")
         p.say(" 0) keep labels as they are")
         for i, (pre, n) in enumerate(disc.asset_prefixes, 1):
-            p.say(f" {i:>2}) {pre}  ({n} assets)")
+            p.say(f" {i:>2}) {pre}  ({plural(n, 'asset')})")
         cands = [pre for pre, _ in disc.asset_prefixes]
 
         def parse_prefix(raw: str) -> str:
+            if raw == "-":
+                return ""
             if raw.isdigit():
                 if int(raw) == 0:
                     return ""
@@ -708,9 +740,11 @@ def _ask_choices(p: Prompter, given: Mapping[str, object], chosen: dict, disc) -
                     raise ValueError(f"no prefix number {raw}")
                 return cands[int(raw) - 1]
             return raw
-        chosen["strip_prefix"] = p.ask("Number or text", "0", parse_prefix)
+        chosen["strip_prefix"] = p.ask("Number or text, - for none", "0", parse_prefix)
     else:
-        chosen["strip_prefix"] = p.ask("Asset label prefix to strip, Enter for none", "")
+        chosen["strip_prefix"] = p.ask(
+            "Asset label prefix to strip, - for none", "",
+            lambda raw: "" if raw in ("-", "0") else raw)
     # status and sensors
     n = disc.dags_total if disc else None
     if given.get("with_status") is not None:
@@ -724,7 +758,7 @@ def _ask_choices(p: Prompter, given: Mapping[str, object], chosen: dict, disc) -
         chosen["infer_sensors"] = given["infer_sensors"]
         p.ok(f"infer_sensors: {str(chosen['infer_sensors']).lower()} (from flag)")
     else:
-        size = f"reads the tasks of {n} DAGs; " if n is not None else ""
+        size = f"reads the tasks of {plural(n, 'DAG')}; " if n is not None else ""
         p.dim(f"Sensor inference finds waits on other DAGs that Airflow does not show: {size}"
               "about a minute on ~600 DAGs.")
         chosen["infer_sensors"] = p.confirm("Infer sensor dependencies?", False)
@@ -734,13 +768,13 @@ def _ask_choices(p: Prompter, given: Mapping[str, object], chosen: dict, disc) -
         p.ok(f"highlight: {chosen['highlight']} (from --highlight)")
     else:
         while True:
-            pattern = p.ask("Highlight DAG ids matching a regex, Enter for none", "",
-                            validate_regex)
+            pattern = p.ask("Highlight DAG ids matching a regex, - for none", "",
+                            lambda raw: "" if raw in ("-", "0") else validate_regex(raw))
             if not pattern or not disc:
                 break
             hits = [d for d in disc.dag_ids if re.search(pattern, d)]
             more = "…" if len(hits) > 5 else ""
-            p.say(f"matches {len(hits)} DAGs: {', '.join(hits[:5])}{more}")
+            p.say(f"matches {plural(len(hits), 'DAG')}: {', '.join(hits[:5])}{more}")
             if p.confirm("Use it?", True):
                 break
         chosen["highlight"] = pattern
@@ -761,16 +795,26 @@ def _ask_choices(p: Prompter, given: Mapping[str, object], chosen: dict, disc) -
 
 
 def _ask_advanced(p: Prompter, given: Mapping[str, object], chosen: dict) -> None:
+    def text(v: object) -> str:
+        return f"{v:g}" if isinstance(v, float) else str(v)
+
+    def timeout_ok(raw: str) -> float:
+        v = _positive(float, "timeout", 0, strict=True)(raw)
+        if not math.isfinite(v):
+            raise ValueError("timeout must be a finite number")
+        return v
+
+    # key, question, default value, parser, flag
     items = [
-        ("tests_task_regex", "Regex that marks a task as a test task", _DEFAULTS["tests_task_regex"],
-         validate_regex, "--tests-task-regex"),
+        ("tests_task_regex", "Regex that marks a task as a test task",
+         _DEFAULTS["tests_task_regex"], validate_regex, "--tests-task-regex"),
         ("task_query_regex", "Regex for --tasks-preset, Enter for none", "", validate_regex,
          "--task-query-regex"),
-        ("lookback", "Recent runs to look at for the status", str(_DEFAULTS["status_runs_lookback"]),
+        ("lookback", "Recent runs to look at for the status", _DEFAULTS["status_runs_lookback"],
          _positive(int, "lookback", 1), "--lookback"),
-        ("timeout", "Seconds to wait for one API request", f"{_DEFAULTS['timeout']:g}",
-         _positive(float, "timeout", 0, strict=True), "--timeout"),
-        ("workers", "Parallel API requests", str(_DEFAULTS["workers"]),
+        ("timeout", "Seconds to wait for one API request", float(_DEFAULTS["timeout"]),
+         timeout_ok, "--timeout"),
+        ("workers", "Parallel API requests", _DEFAULTS["workers"],
          _positive(int, "workers", 1), "--workers"),
     ]
     todo = []
@@ -783,6 +827,6 @@ def _ask_advanced(p: Prompter, given: Mapping[str, object], chosen: dict) -> Non
     if not todo or not p.confirm("Change advanced settings?", False):
         return
     for key, label, default, parse in todo:
-        v = p.ask(label, default, parse)
-        if str(v) != default and v != "":
+        v = p.ask(label, text(default), parse)
+        if v != default and v != "":
             chosen[key] = v
