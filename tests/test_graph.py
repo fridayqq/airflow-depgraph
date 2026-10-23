@@ -2,7 +2,6 @@ import pytest
 
 from airflow_depgraph.graph import Graph, reach_dags, walk
 
-
 NODES = [
     {"id": "dag:a", "label": "a", "type": "dag"},
     {"id": "dag:b", "label": "b", "type": "dag"},

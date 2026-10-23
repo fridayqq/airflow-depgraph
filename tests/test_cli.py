@@ -547,6 +547,7 @@ def test_infer_and_with_tasks_read_each_dag_once(tmp_path, live, monkeypatch):
 
 def test_stale_catalog_dag_gets_unlinked_error_not_no_dependencies(tmp_path, capsys):
     import dataclasses
+
     from airflow_depgraph import snapshot as snapmod
     snap = snapmod.load(Path(FIX))
     catalog = dict(snap.catalog, dag_old={"tags": [], "is_paused": True, "is_stale": True,
@@ -673,6 +674,7 @@ def test_report_json_is_a_list(capsys):
 
 def test_report_unlinked_without_catalog_exits_1(tmp_path, capsys):
     from dataclasses import replace
+
     from airflow_depgraph import snapshot as snapmod
     path = tmp_path / "nocat.json"
     snapmod.dump(replace(snapmod.load(Path(FIX)), catalog=None), path)

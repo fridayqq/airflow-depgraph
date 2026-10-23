@@ -1,5 +1,7 @@
 # airflow-depgraph
 
+![CI](https://github.com/fridayqq/airflow-depgraph/actions/workflows/ci.yml/badge.svg)
+
 Fetch, query and render the Airflow 3 cross-DAG dependency graph (DAG → asset / trigger / sensor → DAG) from any Airflow 3 instance. It uses only the Python standard library. The result is a JSON snapshot you can query offline, plus one self-contained HTML page.
 
 ![How the pieces fit: Airflow → fetch → snapshot → render → HTML, with presets and credentials feeding fetch](docs/images/overview.png)

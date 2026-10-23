@@ -1,16 +1,15 @@
+import http.client
+import http.server
 import json
+import threading
 import urllib.error
+import urllib.parse
 
 import pytest
 
-from airflow_depgraph.client import AirflowClient, ApiError
-import http.client
-import http.server
-import threading
-import urllib.parse
-
 from airflow_depgraph import __version__
 from airflow_depgraph import client as client_mod
+from airflow_depgraph.client import AirflowClient, ApiError
 from tests.conftest import _Resp, fake_opener
 
 URL = "https://airflow.example.com"
@@ -87,7 +86,8 @@ def test_ids_are_quoted_and_lists_unwrapped():
 
 
 def test_version_swallows_errors():
-    assert AirflowClient(URL, "t", opener=fake_opener({"/api/v2/version": {"version": "3.1.0"}})).version() == "3.1.0"
+    op = fake_opener({"/api/v2/version": {"version": "3.1.0"}})
+    assert AirflowClient(URL, "t", opener=op).version() == "3.1.0"
     assert AirflowClient(URL, "t", opener=fake_opener({"/api/v2/version": 500})).version() is None
 
 
@@ -116,6 +116,7 @@ def test_timeout_and_os_error_are_api_errors(monkeypatch):
 
 def test_list_dags_paginates_until_short_page():
     import urllib.parse
+
     from tests.conftest import _Resp
     seen = []
 
@@ -146,6 +147,7 @@ def test_sensor_endpoints_quote_ids_and_read_content():
 
 def test_list_dags_follows_total_entries_past_capped_pages():
     import urllib.parse
+
     from tests.conftest import _Resp
     seen = []
 
@@ -162,6 +164,7 @@ def test_list_dags_follows_total_entries_past_capped_pages():
 
 def test_task_instances_pages_by_offset_and_stops_at_total_entries():
     import urllib.parse
+
     from tests.conftest import _Resp
     calls = []
     all_items = [{"task_id": f"t{i}"} for i in range(130)]
@@ -201,6 +204,7 @@ def test_task_instances_stops_when_page_repeats_without_total():
 
 def test_task_instances_keeps_mapped_instances_sharing_one_task_id():
     import urllib.parse
+
     from tests.conftest import _Resp
     all_items = [{"task_id": "mapped", "map_index": i} for i in range(150)]
     calls = []

@@ -1,8 +1,7 @@
 import pytest
 
 from airflow_depgraph.client import ApiError
-from airflow_depgraph.sensors import (fetch_tasks, infer_sensor_edges, is_candidate,
-                                      parse_log, parse_source)
+from airflow_depgraph.sensors import fetch_tasks, infer_sensor_edges, is_candidate, parse_log, parse_source
 
 KNOWN = {"dag_a", "dag_b", "dag_c", "waiter", "orders_dag", "edw_dbt-prod01-evening_run"}
 
@@ -91,8 +90,10 @@ def test_states_other_than_running_only_is_data():
 
 
 def test_source_used_when_rendered_is_empty():
-    c = FakeClient(runs={"waiter": ["r1"]}, tis={("waiter", "r1", "wait"): {"rendered_fields": {"op_kwargs": {}}}},
-                   sources={"waiter": 'PythonSensor(task_id="wait", op_kwargs={"a": "dag_c", "b": "dag_a"})\n'})
+    tis = {("waiter", "r1", "wait"): {"rendered_fields": {"op_kwargs": {}}}}
+    c = FakeClient(runs={"waiter": ["r1"]}, tis=tis,
+                   sources={"waiter": 'PythonSensor(task_id="wait", '
+                                      'op_kwargs={"a": "dag_c", "b": "dag_a"})\n'})
     r = _one(c)
     assert r["source"] == "source" and r["targets"] == ["dag_c", "dag_a"] and r["kind"] == "data"
     assert not any(call[0] == "log" for call in c.calls)
@@ -278,6 +279,7 @@ def test_fetch_tasks_stops_calling_after_a_401():
 
 def test_resolve_dag_stops_when_the_run_is_cancelled():
     import threading
+
     from airflow_depgraph.sensors import _resolve_dag
     stop = threading.Event()
     stop.set()
@@ -288,6 +290,7 @@ def test_resolve_dag_stops_when_the_run_is_cancelled():
 
 def test_source_parsed_once_per_dag_and_deep_source_falls_back(monkeypatch):
     import ast
+
     import airflow_depgraph.sensors as sensors
     parsed = []
     real = ast.parse

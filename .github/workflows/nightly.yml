@@ -1,0 +1,44 @@
+name: Nightly contract
+
+# Runs the live contract test against `airflow standalone` with the latest Airflow 3.x.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Resolve the latest Airflow 3.x
+        id: airflow
+        run: |
+          version=$(pip index versions apache-airflow | sed -n 's/^Available versions: //p' \
+            | tr ',' '\n' | tr -d ' ' | grep -E '^3\.[0-9]+\.[0-9]+$' | head -n 1)
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install Airflow with its constraints
+        run: |
+          pip install "apache-airflow==${{ steps.airflow.outputs.version }}" \
+            --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-${{ steps.airflow.outputs.version }}/constraints-3.12.txt"
+
+      - name: Start airflow standalone
+        env:
+          AIRFLOW_HOME: ${{ runner.temp }}/airflow
+        run: bash tests/contract/start_standalone.sh
+
+      - name: Contract test
+        run: |
+          uv sync --dev
+          uv run pytest -q tests/contract

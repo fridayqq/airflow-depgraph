@@ -117,7 +117,8 @@ class InferenceCache:
         self._start_thread = start_thread
         explicit = state_dir or os.environ.get(STATE_DIR_ENV)
         uid = f"-{os.geteuid()}" if hasattr(os, "geteuid") else ""
-        self.state_dir = Path(explicit) if explicit else Path(tempfile.gettempdir()) / f"airflow-depgraph{uid}"
+        default_dir = Path(tempfile.gettempdir()) / f"airflow-depgraph{uid}"
+        self.state_dir = Path(explicit) if explicit else default_dir
         tag = hashlib.sha256(api_url.encode()).hexdigest()[:12]
         self.lock_name = f"airflow-depgraph-infer-{tag}.lock"
         self.state_name = f"airflow-depgraph-inferred-{tag}.json"

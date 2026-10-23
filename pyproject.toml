@@ -1,6 +1,6 @@
 [project]
 name = "airflow-depgraph"
-version = "0.3.0"
+dynamic = ["version"]
 description = "Fetch, query and render the Airflow 3 cross-DAG dependency graph"
 readme = "README.md"
 license = "MIT"
@@ -9,10 +9,16 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = []
+keywords = ["airflow", "apache-airflow", "dag", "dependencies", "lineage", "graph", "dbt"]
 classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Framework :: Apache Airflow",
+    "Environment :: Plugins",
+    "Topic :: System :: Monitoring",
+    "Operating System :: OS Independent",
+    "License :: OSI Approved :: MIT License",
 ]
 
 [project.scripts]
@@ -23,6 +29,8 @@ airflow_depgraph = "airflow_depgraph.airflow_plugin:DepGraphPlugin"
 
 [project.urls]
 Homepage = "https://github.com/fridayqq/airflow-depgraph"
+Changelog = "https://github.com/fridayqq/airflow-depgraph/blob/main/CHANGELOG.md"
+Issues = "https://github.com/fridayqq/airflow-depgraph/issues"
 
 [build-system]
 requires = ["hatchling"]
@@ -44,3 +52,18 @@ artifacts = [
     "src/airflow_depgraph/vendor/**",
     "src/airflow_depgraph/presets/**",
 ]
+
+[tool.hatch.version]
+path = "src/airflow_depgraph/__init__.py"
+
+[tool.pytest.ini_options]
+markers = [
+    "contract: live test against a running Airflow; runs only when DEPGRAPH_CONTRACT_URL is set",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]

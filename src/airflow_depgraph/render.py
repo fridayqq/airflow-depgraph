@@ -58,7 +58,8 @@ def build_view(snap: Snapshot, s: Settings, status_override: dict | None = None)
         if dag_id in override:
             node["fail"] = dict(override[dag_id])
         elif run.get("state") == "failed":
-            node["fail"] = {"kind": run.get("kind") or "pipeline", "paused": paused, "date": run.get("run_after")}
+            node["fail"] = {"kind": run.get("kind") or "pipeline", "paused": paused,
+                            "date": run.get("run_after")}
         if highlight and highlight.search(dag_id):
             node["hl"] = True
 

@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --dev --python ${{ matrix.python-version }}
+
+      - name: Tests
+        run: uv run pytest -q
+
+      - name: Lint
+        run: uvx ruff check src tests
+
+      - name: JavaScript tests
+        run: |
+          if [ -d tests/js ]; then node --test tests/js; else echo "no tests/js, skipped"; fi

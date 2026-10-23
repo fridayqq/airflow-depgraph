@@ -284,7 +284,7 @@ def fetch_tasks(client: AirflowClient, dag_ids: list[str],
             return None
     pool = ThreadPoolExecutor(max_workers=workers)
     try:
-        return dict(zip(dag_ids, pool.map(one, dag_ids)))
+        return dict(zip(dag_ids, pool.map(one, dag_ids), strict=True))
     finally:   # after a 401, queued calls are dropped instead of being sent
         pool.shutdown(wait=False, cancel_futures=True)
 

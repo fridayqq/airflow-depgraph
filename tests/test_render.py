@@ -37,7 +37,8 @@ def test_view_fail_kinds(small_snapshot):
 
 
 def test_view_override_wins(small_snapshot):
-    over = {"dag_c": {"kind": "pipeline", "paused": False, "date": "x"}, "dag_a": {"kind": "tests", "paused": False, "date": "y"}}
+    over = {"dag_c": {"kind": "pipeline", "paused": False, "date": "x"},
+            "dag_a": {"kind": "tests", "paused": False, "date": "y"}}
     nodes = _by_id(build_view(small_snapshot, Settings(), status_override=over))
     assert nodes["dag:dag_c"]["fail"] == {"kind": "pipeline", "paused": False, "date": "x"}
     assert nodes["dag:dag_a"]["fail"]["kind"] == "tests"
@@ -65,7 +66,9 @@ def test_view_stats_count_override_and_ignore_paused():
     snap = Snapshot(
         format=1, fetched_at="t", source=None, airflow_version=None,
         nodes=[{"id": "dag:a", "label": "a", "type": "dag"}, {"id": "dag:b", "label": "b", "type": "dag"}],
-        edges=[], dags={"a": {"is_paused": True, "last_run": {"state": "failed", "kind": "pipeline", "run_after": "d"}}},
+        edges=[],
+        dags={"a": {"is_paused": True,
+                    "last_run": {"state": "failed", "kind": "pipeline", "run_after": "d"}}},
     )
     view = build_view(snap, Settings())
     assert view["stats"]["failing"] == 0
@@ -81,7 +84,9 @@ def test_render_has_no_placeholders_and_inlines_d3(small_snapshot):
     assert "https://d3js.org v7.9.0" in html
     assert "<script src=" not in html and "<link" not in html
     assert "Reports" in html
-    assert "14 DAGs · 6 assets · 1 trigger · 22 edges · failing at snapshot: 2 · sensors: 2 (Airflow) · snapshot 2026-10-22 06:00 UTC" in html
+    summary = ("14 DAGs · 6 assets · 1 trigger · 22 edges · failing at snapshot: 2 · "
+               "sensors: 2 (Airflow) · snapshot 2026-10-22 06:00 UTC")
+    assert summary in html
 
 
 def test_render_embeds_meta(small_snapshot):
@@ -95,7 +100,8 @@ def test_vendored_d3_is_safe_inside_script_element():
 
 
 def test_render_data_cannot_close_script(small_snapshot):
-    snap = dataclasses.replace(small_snapshot, nodes=[{"id": "dag:x", "label": "</script><b>", "type": "dag"}], edges=[], dags=None)
+    node = {"id": "dag:x", "label": "</script><b>", "type": "dag"}
+    snap = dataclasses.replace(small_snapshot, nodes=[node], edges=[], dags=None)
     html = render(snap, Settings())
     assert "</script><b>" not in html
 
@@ -169,7 +175,8 @@ def test_view_without_catalog_has_no_unlinked(small_snapshot):
     assert _by_id(view)["dag:dag_h"]["paused"] is True
     assert _by_id(view)["dag:dag_a"]["tags"] == []
     assert view["stats"]["dags"] == 13
-    assert '"catalog": false' in render(dataclasses.replace(small_snapshot, catalog=None), Settings(tags=("team-a",)))
+    page = render(dataclasses.replace(small_snapshot, catalog=None), Settings(tags=("team-a",)))
+    assert '"catalog": false' in page
 
 
 def test_render_meta_has_tags(small_snapshot):
@@ -210,7 +217,8 @@ def test_view_drops_inferred_sensors_of_stale_dags(inferred_snapshot):
 def test_view_drops_inferred_sensors_whose_targets_are_all_stale(inferred_snapshot):
     import dataclasses
     extra = [{"dag": "dag_a", "task": "w", "source": "rendered", "targets": ["dag_m_stale"], "kind": "data"},
-             {"dag": "dag_b", "task": "w", "source": "rendered", "targets": ["dag_m_stale", "dag_j"], "kind": "data"}]
+             {"dag": "dag_b", "task": "w", "source": "rendered",
+              "targets": ["dag_m_stale", "dag_j"], "kind": "data"}]
     snap = dataclasses.replace(inferred_snapshot, inferred=inferred_snapshot.inferred + extra)
     ids = set(_by_id(build_view(snap, Settings())))
     assert "sensor-inferred:dag_a:w" not in ids and "sensor-inferred:dag_b:w" in ids
@@ -218,6 +226,7 @@ def test_view_drops_inferred_sensors_whose_targets_are_all_stale(inferred_snapsh
 
 def test_view_counts_status_errors_in_header(small_snapshot):
     import dataclasses
+
     from airflow_depgraph.render import _stats_line
     snap = dataclasses.replace(small_snapshot, dags={"dag_a": {"error": "500 on /dags"}})
     stats = build_view(snap, Settings())["stats"]

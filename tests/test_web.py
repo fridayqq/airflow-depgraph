@@ -76,7 +76,8 @@ def test_page_renders_with_token_and_source():
 def test_page_is_cached_per_token_until_ttl():
     t = [0.0]
     b = PageBuilder("u", Settings(), client_factory=FakeClient, clock=lambda: t[0], cache_seconds=10)
-    b.page("tok", None, False); b.page("tok", None, False)
+    b.page("tok", None, False)
+    b.page("tok", None, False)
     assert len(FakeClient.made) == 1
     b.page("other", None, False)
     assert len(FakeClient.made) == 2
@@ -121,8 +122,11 @@ def test_concurrent_same_token_builds_once_with_short_timeout():
 
 
 def _jwt(payload: dict) -> str:
-    import base64, json
-    enc = lambda d: base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b"=").decode()
+    import base64
+    import json
+    def enc(d):
+        return base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b"=").decode()
+
     return f"{enc({'alg': 'HS512'})}.{enc(payload)}.sig"
 
 
@@ -144,7 +148,8 @@ def test_plugin_entry_point_is_declared():
 
 
 def test_cli_never_imports_airflow():
-    import subprocess, sys
+    import subprocess
+    import sys
     code = "import sys, airflow_depgraph.cli; print('airflow' in sys.modules, 'fastapi' in sys.modules)"
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert out.stdout.strip() == "False False"
@@ -318,7 +323,9 @@ def test_one_unreadable_dag_does_not_abort_the_cycle(cache, monkeypatch):
     def tasks(self, dag_id):
         if dag_id == "secret":
             raise ApiError("403", 403, "/tasks")
-        return [{"task_id": "wait_a", "operator_name": "PythonSensor"}] if dag_id.startswith("w") else real(self, dag_id)
+        if dag_id.startswith("w"):
+            return [{"task_id": "wait_a", "operator_name": "PythonSensor"}]
+        return real(self, dag_id)
     monkeypatch.setattr(InferClient, "tasks", tasks)
     assert c.refresh() is True                               # 1 error of 6 entries: under 20 %
     got = {(e["dag"], e["source"]) for e in c.current()[0]}
@@ -412,6 +419,7 @@ def test_rejected_token_is_never_offered():
 def test_default_state_dir_is_private_per_user(tmp_path, monkeypatch):
     import os
     import stat
+
     from airflow_depgraph import web
     monkeypatch.delenv("AIRFLOW_DEPGRAPH_STATE_DIR", raising=False)
     monkeypatch.setattr(web.tempfile, "gettempdir", lambda: str(tmp_path))
@@ -423,6 +431,7 @@ def test_default_state_dir_is_private_per_user(tmp_path, monkeypatch):
 @pytest.mark.parametrize("make", ["group_writable", "symlink"])
 def test_unsafe_state_dir_falls_back_to_per_process(tmp_path, monkeypatch, make, caplog):
     import os
+
     from airflow_depgraph import web
     real = tmp_path / "real"
     real.mkdir(mode=0o700)

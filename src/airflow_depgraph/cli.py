@@ -12,14 +12,13 @@ import sys
 from importlib import resources
 from pathlib import Path
 
-from airflow_depgraph import __version__
-from airflow_depgraph import report
-from airflow_depgraph.labels import state_label
+from airflow_depgraph import __version__, report
 from airflow_depgraph import snapshot as snapmod
 from airflow_depgraph.auth import CredentialsError, resolve_password, resolve_user
 from airflow_depgraph.cli_format import TITLES, format_hits, format_tree, hits_json, stamp
 from airflow_depgraph.client import AirflowClient, ApiError
 from airflow_depgraph.graph import Hit, walk
+from airflow_depgraph.labels import state_label
 from airflow_depgraph.presets import PresetError, Settings, list_presets, resolve
 from airflow_depgraph.render import render
 from airflow_depgraph.sensors import fetch_tasks, infer_sensor_edges
@@ -260,10 +259,10 @@ REPORT_TITLES = {
 
 
 def _table(headers: list[str], rows: list[list[str]]) -> str:
-    widths = [max(len(str(c)) for c in col) for col in zip(headers, *rows)]
+    widths = [max(len(str(c)) for c in col) for col in zip(headers, *rows, strict=True)]
 
     def fmt(cells) -> str:
-        return "  ".join(str(c).ljust(w) for c, w in zip(cells, widths)).rstrip()
+        return "  ".join(str(c).ljust(w) for c, w in zip(cells, widths, strict=True)).rstrip()
     return "\n".join([fmt(headers)] + [fmt(r) for r in rows])
 
 
@@ -401,7 +400,8 @@ def _query(args: argparse.Namespace, direction: str) -> int:
     if args.json:
         print(hits_json(dag, direction, args.depth, hits, info, regex is not None))
     else:
-        header = f"{TITLES[direction]} of {dag} — {len(hits)} (depth ≤ {args.depth}, {stamp(snap if args.snapshot else None)})"
+        when = stamp(snap if args.snapshot else None)
+        header = f"{TITLES[direction]} of {dag} — {len(hits)} (depth ≤ {args.depth}, {when})"
         if args.tree:
             print(header)
             print(format_tree(hits, info, dag, strip_prefix=s.asset_label_strip_prefix))
@@ -431,7 +431,8 @@ def cmd_tasks(args: argparse.Namespace) -> int:
 
 def cmd_presets(args: argparse.Namespace) -> int:
     if args.example:
-        print((resources.files("airflow_depgraph") / "presets" / "example.toml").read_text(encoding="utf-8"), end="")
+        example = resources.files("airflow_depgraph") / "presets" / "example.toml"
+        print(example.read_text(encoding="utf-8"), end="")
         return 0
     for name, path in list_presets(os.environ):
         print(f"{name}  {path}")
@@ -482,7 +483,8 @@ def _parser() -> argparse.ArgumentParser:
 
     render_opts = argparse.ArgumentParser(add_help=False)
     render_opts.add_argument("--title", help="title of the rendered page")
-    render_opts.add_argument("--highlight", help="regex of DAG ids to highlight (matched against ids without the dag: prefix)")
+    render_opts.add_argument("--highlight", help="regex of DAG ids to highlight "
+                             "(matched against ids without the dag: prefix)")
     render_opts.add_argument("--status", metavar="FILE",
                              help="JSON {dag_id: {kind, paused, date}} that overrides the snapshot status")
 
@@ -568,7 +570,8 @@ def _parser() -> argparse.ArgumentParser:
     t.add_argument("--json", action="store_true", help="print a JSON list")
     t.set_defaults(func=cmd_tasks)
 
-    rp = add("report", parents=[common, net_opts], help="critical, unlinked, unconsumed-assets or failing DAGs",
+    rp = add("report", parents=[common, net_opts],
+             help="critical, unlinked, unconsumed-assets or failing DAGs",
              description="Reports over a snapshot file: critical (DAGs with the most downstream "
                          "DAGs), unlinked (DAGs with no links), unconsumed-assets (assets nobody "
                          "reads) and failing (DAGs whose last run failed). Works offline.",
