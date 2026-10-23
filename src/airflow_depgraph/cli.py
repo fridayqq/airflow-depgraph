@@ -9,7 +9,6 @@ import json
 import os
 import re
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from importlib import resources
 from pathlib import Path
 
@@ -79,10 +78,9 @@ def _walk(snap: Snapshot, dag: str, direction: str, depth: int,
           inferred: bool = True, guards: bool = False) -> list[Hit] | None:
     """None when the DAG is not a node of the graph (see _unlinked)."""
     g = snap.graph if inferred and not guards else snap.graph_for(inferred, guards)
-    try:
-        return walk(g, dag, direction, depth)
-    except KeyError:
+    if f"dag:{dag}" not in g.nodes:
         return None
+    return walk(g, dag, direction, depth)
 
 
 def _unlinked(snap: Snapshot, dag: str, direction: str, args: argparse.Namespace) -> int:
@@ -109,7 +107,8 @@ def _unlinked(snap: Snapshot, dag: str, direction: str, args: argparse.Namespace
                    f"({len(g.dag_ids)} DAGs known){suffix}")
 
 
-def _fetch_dags(client: AirflowClient, snap: Snapshot, s: Settings) -> dict | None:
+def _fetch_dags(client: AirflowClient, snap: Snapshot, s: Settings,
+                tasks_by_dag: dict[str, list[dict] | None] | None = None) -> dict | None:
     ids = snap.graph.dag_ids
     if s.with_status:
         def progress(msg: str) -> None:
@@ -122,14 +121,22 @@ def _fetch_dags(client: AirflowClient, snap: Snapshot, s: Settings) -> dict | No
                   f"(first error: {errors[0]})", file=sys.stderr)
         return result
     if s.with_tasks:
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            tasks = pool.map(lambda d: [t["task_id"] for t in client.tasks(d)], ids)
-            return {d: {"tasks": t} for d, t in zip(ids, tasks)}
+        tasks_by_dag = dict(tasks_by_dag or {})
+        missing = [d for d in ids if d not in tasks_by_dag]
+        if missing:
+            tasks_by_dag.update(fetch_tasks(client, missing))
+        unreadable = [d for d in ids if tasks_by_dag.get(d) is None]
+        if unreadable:
+            print(f"warning: task list unavailable for {len(unreadable)} DAGs", file=sys.stderr)
+        return {d: ({"tasks": [t["task_id"] for t in tasks_by_dag[d]]}
+                    if tasks_by_dag.get(d) is not None else {})
+                for d in ids}
     return None
 
 
-def _infer(client: AirflowClient, snap: Snapshot) -> list[dict]:
-    """Sensors of every catalog DAG (graph DAGs without a catalog) that wait on another DAG."""
+def _infer(client: AirflowClient, snap: Snapshot) -> tuple[list[dict], dict[str, list[dict] | None]]:
+    """Sensors of every catalog DAG (graph DAGs without a catalog) that wait on another DAG.
+    Also returns the task lists it read, so --with-tasks can reuse them."""
     if snap.catalog is not None:
         ids = sorted(d for d, c in snap.catalog.items() if not c.get("is_stale"))
     else:
@@ -139,15 +146,16 @@ def _infer(client: AirflowClient, snap: Snapshot) -> list[dict]:
 
     def progress(msg: str) -> None:
         print(f"inferring sensors {msg.split()[0]}", file=sys.stderr)
-    return infer_sensor_edges(client, ids, tasks, progress=progress)
+    return infer_sensor_edges(client, ids, tasks, progress=progress), tasks
 
 
 def _fetch_snapshot(args: argparse.Namespace, s: Settings) -> Snapshot:
     client = _client(s, args)
     snap = _live_snapshot(client, s, args.node_id)
+    tasks = None
     if s.infer_sensors and not args.node_id:
-        snap.inferred = _infer(client, snap)
-    snap.dags = _fetch_dags(client, snap, s)
+        snap.inferred, tasks = _infer(client, snap)
+    snap.dags = _fetch_dags(client, snap, s, tasks)
     return snap
 
 
@@ -280,7 +288,7 @@ def _query(args: argparse.Namespace, direction: str) -> int:
         client = _client(s, args)
         snap = _live_snapshot(client, s, None)
         if s.infer_sensors:
-            snap.inferred = _infer(client, snap)
+            snap.inferred, _ = _infer(client, snap)
     dag = args.dag.removeprefix("dag:")
     hits = _walk(snap, dag, direction, args.depth,
                  inferred=not args.no_inferred, guards=args.include_guards)
@@ -419,6 +427,9 @@ def main(argv: list[str] | None = None) -> int:
     except (SnapshotError, PresetError, CredentialsError, ApiError, CliError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        print("interrupted", file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":

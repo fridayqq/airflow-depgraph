@@ -451,3 +451,59 @@ def test_node_id_form_is_accepted(capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["dag"] == "dag_e"
     assert out["dags"][0]["dag_id"] == "dag_l_report"
+
+
+def test_fetch_with_tasks_survives_one_forbidden_dag(tmp_path, live, monkeypatch, capsys):
+    from airflow_depgraph.client import ApiError
+
+    def tasks(self, dag_id):
+        if dag_id == "y":
+            raise ApiError("403 on /tasks", 403, "/tasks")
+        return [{"task_id": "refresh_dashboard"}]
+    monkeypatch.setattr(FakeClient, "tasks", tasks)
+    out = tmp_path / "s.json"
+    assert cli.main(["fetch", "--url", URL, "-o", str(out), "--with-tasks"]) == 0
+    data = json.loads(out.read_text())
+    assert data["dags"]["x"] == {"tasks": ["refresh_dashboard"]}
+    assert data["dags"]["y"] == {}
+    assert "warning: task list unavailable for 1 DAGs" in capsys.readouterr().err
+
+
+def test_main_returns_130_on_ctrl_c(tmp_path, live, monkeypatch, capsys):
+    def interrupted(args):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(cli, "cmd_fetch", interrupted)
+    assert cli.main(["fetch", "--url", URL, "-o", str(tmp_path / "s.json")]) == 130
+    assert "interrupted" in capsys.readouterr().err
+
+
+def test_infer_and_with_tasks_read_each_dag_once(tmp_path, live, monkeypatch):
+    calls = []
+
+    def tasks(self, dag_id):
+        calls.append(dag_id)
+        if dag_id == "z":
+            return [{"task_id": "wait_x", "operator_name": "PythonSensor"}]
+        return [{"task_id": "refresh_dashboard"}, {"task_id": "other"}]
+    monkeypatch.setattr(FakeClient, "tasks", tasks)
+    monkeypatch.setattr(FakeClient, "dag_runs", lambda self, d, limit: [{"dag_run_id": "r1"}])
+    monkeypatch.setattr(FakeClient, "task_instance", lambda self, d, r, t: {
+        "dag_run_id": r, "rendered_fields": {"op_kwargs": {"external_dag_id": "x"}}}, raising=False)
+    out = tmp_path / "s.json"
+    assert cli.main(["fetch", "--url", URL, "-o", str(out), "--infer-sensors", "--with-tasks"]) == 0
+    assert sorted(calls) == ["x", "y", "z"]
+    assert json.loads(out.read_text())["dags"]["x"] == {"tasks": ["refresh_dashboard", "other"]}
+
+
+def test_stale_catalog_dag_gets_unlinked_error_not_no_dependencies(tmp_path, capsys):
+    import dataclasses
+    from airflow_depgraph import snapshot as snapmod
+    snap = snapmod.load(Path(FIX))
+    catalog = dict(snap.catalog, dag_old={"tags": [], "is_paused": True, "is_stale": True,
+                                          "schedule": None, "owners": []})
+    path = tmp_path / "s.json"
+    snapmod.dump(dataclasses.replace(snap, catalog=catalog), path)
+    assert cli.main(["downstream", "dag_old", str(path)]) == 1
+    captured = capsys.readouterr()
+    assert "is not in the dependency graph" in captured.err
+    assert "exists but has no explicit dependencies" not in captured.out
