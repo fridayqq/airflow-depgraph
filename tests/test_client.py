@@ -132,3 +132,19 @@ def test_sensor_endpoints_quote_ids_and_read_content():
     assert c.dag_source("my dag") == "dag source"
     assert "orders_dag" in c.task_log("my dag", "r+1", "grp.wait", 2)
     assert op.calls[2]["url"].endswith("/logs/2?full_content=true")
+
+
+def test_list_dags_follows_total_entries_past_capped_pages():
+    import urllib.parse
+    from tests.conftest import _Resp
+    seen = []
+
+    def opener(req, timeout=None):
+        offset = int(urllib.parse.parse_qs(urllib.parse.urlsplit(req.full_url).query)["offset"][0])
+        seen.append(offset)
+        n = min(50, 120 - offset)       # the server caps pages at 50 rows
+        return _Resp(json.dumps({"dags": [{"dag_id": f"d{offset + i}"} for i in range(n)],
+                                 "total_entries": 120}).encode())
+
+    assert len(AirflowClient(URL, "t", opener=opener).list_dags()) == 120
+    assert seen == [0, 50, 100]

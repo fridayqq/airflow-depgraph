@@ -34,7 +34,8 @@ def build_view(snap: Snapshot, s: Settings, status_override: dict | None = None)
     # Stale DAGs (gone from the DAG folder) are dropped with their edges.
     # Inferred deploy guards are on the page (behind a toggle) but never counted as reach.
     stale = {"dag:" + d for d, c in catalog.items() if c.get("is_stale")}
-    all_nodes, all_edges = with_inferred(snap.nodes, snap.edges, snap.inferred, include_guards=True)
+    inferred = [e for e in snap.inferred or [] if isinstance(e, dict) and "dag:" + str(e.get("dag")) not in stale]
+    all_nodes, all_edges = with_inferred(snap.nodes, snap.edges, inferred, include_guards=True)
     raw_nodes = [n for n in all_nodes if n["id"] not in stale]
     raw_edges = [e for e in all_edges if e["source_id"] not in stale and e["target_id"] not in stale]
     guards = {n["id"] for n in raw_nodes if n.get("kind") == "guard"}

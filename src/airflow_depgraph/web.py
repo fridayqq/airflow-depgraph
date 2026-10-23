@@ -5,10 +5,13 @@ import base64
 import hashlib
 import json
 import logging
+import os
+import tempfile
 import threading
 import time
 from collections import OrderedDict
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable, Mapping
 from urllib.parse import urlparse
 
@@ -16,7 +19,12 @@ from . import snapshot as snapmod
 from .client import AirflowClient, ApiError
 from .presets import Settings
 from .render import render
-from .sensors import fetch_tasks, infer_sensor_edges
+from .sensors import AUTH_STATUSES, fetch_tasks, infer_sensor_edges
+
+try:
+    import fcntl
+except ImportError:  # not POSIX: every process refreshes on its own
+    fcntl = None
 from .status import fetch_status
 
 TOKEN_COOKIE = "_token"
@@ -26,6 +34,12 @@ MAX_BUILDS = 3
 CLIENT_TIMEOUT = 10
 INFER_WORKERS = 4
 INFER_POLL_SECONDS = 30
+INFER_RETRY_SECONDS = 300
+TOKEN_MARGIN_SECONDS = 15 * 60
+MAX_ERROR_SHARE = 0.2
+STATE_DIR_ENV = "AIRFLOW_DEPGRAPH_STATE_DIR"
+LOCK_NAME = "airflow-depgraph-infer.lock"
+STATE_NAME = "airflow-depgraph-inferred.json"
 log = logging.getLogger(__name__)
 
 
@@ -67,27 +81,33 @@ def loopback_url(base_url: str | None, port: int | str, override: str | None = N
 class InferenceCache:
     """Latest inferred sensor links, refreshed in a daemon thread with a recent user's token.
 
-    The thread starts on the first `offer()`. Each cycle uses the most recent usable token seen;
-    without one the cycle is skipped. Tokens are kept in memory only and never logged.
+    `offer()` takes tokens Airflow has just accepted and starts the thread. Only one process per
+    host refreshes: the holder of an flock on <state dir>/LOCK_NAME. It writes the result to
+    <state dir>/STATE_NAME, and every process serves the newest content of that file. Tokens stay
+    in the process that received them and are never logged or written anywhere.
     """
 
     def __init__(self, api_url: str, interval_seconds: float, *,
                  client_factory: Callable[..., AirflowClient] = AirflowClient,
-                 builds: threading.Semaphore | None = None,
                  wall_clock: Callable[[], float] = time.time,
-                 start_thread: bool = True):
+                 start_thread: bool = True, state_dir: str | os.PathLike | None = None,
+                 shared: bool | None = None):
         self.api_url, self.interval = api_url, interval_seconds
         self._client_factory, self._wall = client_factory, wall_clock
-        self._builds = builds or threading.BoundedSemaphore(1)
+        self._builds = threading.BoundedSemaphore(1)      # inference has its own slot
         self._start_thread = start_thread
+        self.state_dir = Path(state_dir or os.environ.get(STATE_DIR_ENV) or tempfile.gettempdir())
+        self._shared = (fcntl is not None) if shared is None else shared
         self._lock = threading.Lock()
         self._token: str | None = None
         self._result: tuple[list[dict], float] | None = None
         self._attempted: float | None = None
+        self._file_seen: tuple[int, int] | None = None
+        self._lock_fd: int | None = None
         self._thread: threading.Thread | None = None
 
     def offer(self, token: str) -> None:
-        """Remember the caller's token for the next cycle and start the thread if needed."""
+        """Remember a token Airflow accepted for the next cycle; start the thread if needed."""
         if not token_usable(token, self._wall()):
             return
         with self._lock:
@@ -99,8 +119,59 @@ class InferenceCache:
 
     def current(self) -> tuple[list[dict], float] | None:
         """(inferred list, wall-clock time of the refresh) or None before the first refresh."""
+        if self._shared:
+            self._reload()
         with self._lock:
             return self._result
+
+    def _reload(self) -> None:
+        path = self.state_dir / STATE_NAME
+        try:
+            st = path.stat()
+            if (st.st_mtime_ns, st.st_size) == self._file_seen:
+                return
+            data = json.loads(path.read_text(encoding="utf-8"))
+            entries, at = data["entries"], float(data["updated_at"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return
+        if isinstance(entries, list):
+            with self._lock:
+                self._file_seen, self._result = (st.st_mtime_ns, st.st_size), (entries, at)
+
+    def _publish(self, entries: list[dict], at: float) -> None:
+        path = self.state_dir / STATE_NAME
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"updated_at": at, "entries": entries}, f)
+        os.replace(tmp, path)
+        st = path.stat()
+        with self._lock:
+            self._file_seen = (st.st_mtime_ns, st.st_size)
+
+    def leader(self) -> bool:
+        """True when this process refreshes (holds the host-wide lock, or nothing is shared)."""
+        if not self._shared or self._lock_fd is not None:
+            return True
+        try:
+            self.state_dir.mkdir(parents=True, exist_ok=True)
+            fd = os.open(self.state_dir / LOCK_NAME, os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError as exc:
+            log.warning("airflow-depgraph: cannot open the inference lock file: %s", exc)
+            return False
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            return False
+        self._lock_fd = fd
+        return True
+
+    def close(self) -> None:
+        """Give up leadership (a process exit does the same)."""
+        if self._lock_fd is not None:
+            os.close(self._lock_fd)
+            self._lock_fd = None
 
     def due(self) -> bool:
         with self._lock:
@@ -112,28 +183,50 @@ class InferenceCache:
                 self.refresh()
             time.sleep(INFER_POLL_SECONDS)
 
+    def _retry_later(self) -> None:
+        with self._lock:      # failed for another reason than auth: try again in a few minutes
+            self._attempted = self._wall() - self.interval + INFER_RETRY_SECONDS
+
     def refresh(self) -> bool:
-        """One cycle; False when it was skipped (no usable token, retried soon) or failed."""
+        """One cycle. False when skipped (no token with 15 min left, not the leader) or failed;
+        the previous result is kept then."""
         with self._lock:
             token = self._token
-            if not token or not token_usable(token, self._wall()):
-                return False
-            self._attempted = self._wall()
+        if not token or not token_usable(token, self._wall() + TOKEN_MARGIN_SECONDS):
+            return False
+        if not self.leader():
+            return False
         try:
             with self._builds:
                 inferred = self._infer(token)
         except ApiError as exc:
-            if exc.status in (401, 403):
+            if exc.status in AUTH_STATUSES:
                 with self._lock:
                     if self._token == token:
                         self._token = None
-            log.warning("airflow-depgraph: sensor inference skipped: %s", exc)
+                    self._attempted = None          # the next accepted visitor refreshes at once
+            else:
+                self._retry_later()
+            log.warning("airflow-depgraph: sensor inference aborted: %s", exc)
             return False
         except Exception:  # noqa: BLE001 - the thread must survive any one bad cycle
             log.exception("airflow-depgraph: sensor inference failed")
+            self._retry_later()
             return False
+        errors = sum(1 for e in inferred if e.get("source") == "error")
+        if errors > MAX_ERROR_SHARE * len(inferred):
+            log.warning("airflow-depgraph: %d of %d sensors failed to resolve; keeping the "
+                        "previous sensor links", errors, len(inferred))
+            self._retry_later()
+            return False
+        at = self._wall()
+        if self._shared:
+            try:
+                self._publish(inferred, at)
+            except OSError as exc:
+                log.warning("airflow-depgraph: cannot write the inference state file: %s", exc)
         with self._lock:
-            self._result = (inferred, self._wall())
+            self._result, self._attempted = (inferred, at), at
         return True
 
     def _infer(self, token: str) -> list[dict]:
@@ -161,7 +254,7 @@ class PageBuilder:
         self.inference: InferenceCache | None = None
         if settings.infer_sensors:
             self.inference = InferenceCache(
-                api_url, max(1, settings.infer_interval_minutes) * 60, builds=self._builds,
+                api_url, max(1, settings.infer_interval_minutes) * 60,
                 client_factory=lambda *a, **kw: self._client_factory(*a, **kw))
 
     def _hit(self, key: tuple[str, bool]) -> str | None:
@@ -180,24 +273,29 @@ class PageBuilder:
                 self._cache.popitem(last=False)
 
     def page(self, token: str, public_url: str | None, with_status: bool) -> str:
-        if self.inference is not None:
-            self.inference.offer(token)
         key = (hashlib.sha256(token.encode()).hexdigest(), with_status)
         if (html := self._hit(key)) is not None:
+            self._offer(token)                  # Airflow accepted this token for that page
             return html
         with self._lock:
             key_lock = self._key_locks.setdefault(key, threading.Lock())
         try:
             with key_lock:                      # one in-flight build per key
                 if (html := self._hit(key)) is not None:
+                    self._offer(token)
                     return html
                 with self._builds:
                     html = self._build(token, public_url, with_status)
                 self._store(key, html)
+                self._offer(token)
                 return html
         finally:
             with self._lock:
                 self._key_locks.pop(key, None)
+
+    def _offer(self, token: str) -> None:
+        if self.inference is not None:
+            self.inference.offer(token)
 
     def _build(self, token: str, public_url: str | None, with_status: bool) -> str:
         client = self._client_factory(self.api_url, token=token, timeout=CLIENT_TIMEOUT)

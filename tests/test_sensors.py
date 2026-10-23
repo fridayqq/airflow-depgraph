@@ -10,9 +10,10 @@ KNOWN = {"dag_a", "dag_b", "dag_c", "waiter", "orders_dag"}
 class FakeClient:
     """runs: dag -> run ids (newest first); tis: (dag, run, task) -> TI; sources/logs by dag/task."""
 
-    def __init__(self, runs=None, tis=None, sources=None, logs=None, broken=()):
+    def __init__(self, runs=None, tis=None, sources=None, logs=None, broken=(), fail=None):
         self.runs, self.tis = runs or {}, tis or {}
         self.sources, self.logs, self.broken = sources or {}, logs or {}, set(broken)
+        self.fail = fail or {}          # call kind -> exception raised by that call
         self.calls = []
 
     def dag_runs(self, dag_id, limit):
@@ -30,15 +31,21 @@ class FakeClient:
 
     def dag_source(self, dag_id):
         self.calls.append(("source", dag_id))
+        if "source" in self.fail:
+            raise self.fail["source"]
         return self.sources.get(dag_id, "")
 
     def task_log(self, dag_id, run_id, task_id, try_number):
         self.calls.append(("log", dag_id, run_id, task_id, try_number))
+        if "log" in self.fail:
+            raise self.fail["log"]
         return self.logs.get((dag_id, task_id), "")
 
     def tasks(self, dag_id):
+        if dag_id == "expired":
+            raise ApiError("401", 401, "/tasks")
         if dag_id == "hidden":
-            raise ApiError("403", 403, "/tasks")
+            raise ApiError("404", 404, "/tasks")
         return [{"task_id": "t", "operator_name": "PythonSensor"}]
 
 
@@ -85,7 +92,7 @@ def test_states_other_than_running_only_is_data():
 
 def test_source_used_when_rendered_is_empty():
     c = FakeClient(runs={"waiter": ["r1"]}, tis={("waiter", "r1", "wait"): {"rendered_fields": {"op_kwargs": {}}}},
-                   sources={"waiter": 'DAG_ID = "waiter"\nwait_for("dag_c")\nx = \'dag_a\'\n'})
+                   sources={"waiter": 'PythonSensor(task_id="wait", op_kwargs={"a": "dag_c", "b": "dag_a"})\n'})
     r = _one(c)
     assert r["source"] == "source" and r["targets"] == ["dag_c", "dag_a"] and r["kind"] == "data"
     assert not any(call[0] == "log" for call in c.calls)
@@ -94,7 +101,7 @@ def test_source_used_when_rendered_is_empty():
 def test_logs_used_last_with_try_number():
     c = FakeClient(runs={"waiter": ["r1"]},
                    tis={("waiter", "r1", "wait"): {"rendered_fields": {}, "try_number": 3}},
-                   logs={("waiter", "wait"): "[INFO] DAG orders_dag has successfully executed."})
+                   logs={("waiter", "wait"): "[INFO] DAG orders_dag has successfully executed. dag_a"})
     r = _one(c)
     assert r["source"] == "logs" and r["targets"] == ["orders_dag"]
     assert ("log", "waiter", "r1", "wait", 3) in c.calls
@@ -108,6 +115,37 @@ def test_own_dag_and_unknown_ids_are_ignored():
     assert r["source"] == "none" and r["targets"] == []
 
 
+def test_empty_rendered_fields_look_at_older_runs():
+    c = FakeClient(runs={"waiter": ["r3", "r2", "r1"]}, tis={
+        ("waiter", "r3", "wait"): {"rendered_fields": None},
+        ("waiter", "r2", "wait"): {"rendered_fields": {}},
+        ("waiter", "r1", "wait"): {"rendered_fields": {"op_kwargs": {"dag_id": "dag_a"}}}})
+    assert _one(c)["targets"] == ["dag_a"]
+
+
+def test_failing_stage_does_not_skip_the_next_and_marks_error():
+    c = FakeClient(runs={"waiter": ["r1"]}, tis={("waiter", "r1", "wait"): {"rendered_fields": {}}},
+                   fail={"source": ApiError("500", 500, "/src")},
+                   logs={("waiter", "wait"): "poking dag_id=orders_dag"})
+    assert _one(c)["source"] == "logs"
+    c.logs = {}
+    assert _one(c)["source"] == "error"                      # nothing found, a call failed
+    assert _one(FakeClient())["source"] == "none"            # nothing found, nothing failed
+
+
+@pytest.mark.parametrize("kind", ["source", "log"])
+def test_auth_errors_abort_the_run(kind):
+    c = FakeClient(runs={"waiter": ["r1"]}, tis={("waiter", "r1", "wait"): {"rendered_fields": {}}},
+                   fail={kind: ApiError("401", 401, "/x")})
+    with pytest.raises(ApiError):
+        infer_sensor_edges(c, KNOWN, {"waiter": [sensor()]})
+
+
+def test_fetch_tasks_aborts_on_auth_error():
+    with pytest.raises(ApiError):
+        fetch_tasks(FakeClient(), ["a", "expired"])
+
+
 def test_no_task_instance_skips_logs():
     c = FakeClient(runs={"waiter": ["r1"]})
     assert _one(c)["source"] == "none"
@@ -115,7 +153,7 @@ def test_no_task_instance_skips_logs():
 
 
 def test_source_fetched_once_per_dag():
-    c = FakeClient(sources={"waiter": "'dag_a'"})
+    c = FakeClient(sources={"waiter": "x = 'dag_a'"})
     out = infer_sensor_edges(c, KNOWN, {"waiter": [sensor("s1"), sensor("s2")]})
     assert [r["targets"] for r in out] == [["dag_a"], ["dag_a"]]
     assert c.calls.count(("source", "waiter")) == 1
@@ -124,7 +162,10 @@ def test_source_fetched_once_per_dag():
 def test_errors_are_isolated_per_sensor():
     c = FakeClient(runs={"waiter": ["r1"]}, sources={"waiter": "'dag_a'"}, broken={"bad"})
     out = infer_sensor_edges(c, KNOWN, {"waiter": [sensor("bad"), sensor("good")]})
-    assert [(r["task"], r["source"]) for r in out] == [("bad", "none"), ("good", "source")]
+    assert [(r["task"], r["source"]) for r in out] == [("bad", "source"), ("good", "source")]
+    c.fail["source"] = RuntimeError("boom")
+    out = infer_sensor_edges(c, KNOWN, {"other": [sensor("bad"), sensor("good")]})
+    assert [(r["task"], r["source"]) for r in out] == [("bad", "error"), ("good", "error")]
 
 
 def test_non_candidates_are_skipped_and_output_sorted():
@@ -135,9 +176,55 @@ def test_non_candidates_are_skipped_and_output_sorted():
     assert [(r["dag"], r["task"]) for r in out] == [("dag_b", "wait"), ("dag_c", "wait")]
 
 
-def test_parsers_need_min_length_and_quotes():
-    assert parse_source("dag_a = 1; f('dag_b')", KNOWN, "x") == ["dag_b"]
-    assert parse_log("dag_a done; waited for orders_dag.", KNOWN, "x") == ["orders_dag"]
+def test_log_needs_context_and_exactly_one_dag():
+    assert parse_log("dag_a done; waiting for DAG orders_dag.", KNOWN, "x") == ["orders_dag"]
+    assert parse_log("dag_id='dag_b' state=running", KNOWN, "x") == ["dag_b"]
+    assert parse_log("orders_dag dag_a", KNOWN, "x") == []                  # no context
+    assert parse_log("DAG dag_a and DAG dag_b", KNOWN, "x") == []           # ambiguous
+    assert parse_log("DAG waiter", KNOWN, "waiter") == []                   # own DAG
+
+
+TRIGGER_AND_SENSOR = """
+from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.providers.standard.sensors.python import PythonSensor
+
+def _done(dag_id):
+    return check("dag_b")
+
+with DAG("waiter", doc_md="Loads after dag_c, see also orders_dag"):
+    go = TriggerDagRunOperator(task_id="kick", trigger_dag_id="dag_a")
+    wait = PythonSensor(task_id="wait", python_callable=_done)
+"""
+
+
+def test_source_scoped_to_sensor_call_and_callable():
+    assert parse_source(TRIGGER_AND_SENSOR, "wait", KNOWN, "waiter") == ["dag_b"]
+    # the trigger target, the doc_md mentions: not the sensor's
+    assert parse_source(TRIGGER_AND_SENSOR, "kick", KNOWN, "waiter") == ["dag_a"]
+
+
+def test_source_task_sensor_decorator_and_group_prefix():
+    src = """
+@task.sensor(poke_interval=60)
+def wait_load():
+    return done("dag_c")
+
+@task.sensor(task_id="wait_other")
+def anything():
+    return done("orders_dag")
+
+PythonSensor(task_id="unrelated", op_kwargs={"d": "dag_a"})
+"""
+    assert parse_source(src, "grp.wait_load", KNOWN, "waiter") == ["dag_c"]
+    assert parse_source(src, "wait_other", KNOWN, "waiter") == ["orders_dag"]
+
+
+def test_source_falls_back_to_file_only_for_a_single_dag():
+    factory = "for d in ['dag_a', 'dag_b', 'dag_c']:\n    make(d)\n"
+    assert parse_source(factory, "wait", KNOWN, "waiter") == []
+    assert parse_source("make('dag_a')\n", "wait", KNOWN, "waiter") == ["dag_a"]
+    assert parse_source("def broken(:\n 'dag_a'", "wait", KNOWN, "waiter") == ["dag_a"]
+    assert parse_source("def broken(:\n 'dag_a' 'dag_b'", "wait", KNOWN, "waiter") == []
 
 
 def test_fetch_tasks_maps_errors_to_empty():

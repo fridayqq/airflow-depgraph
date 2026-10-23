@@ -252,40 +252,65 @@ Airflow's `/ui/dependencies` only knows `ExternalTaskSensor`. Many DAGs wait on 
   `ExternalTaskSensor` (already in the graph) and sensors that wait on time, files or BI jobs:
   `TimeSensor`, `DateTimeSensor`, `TimeDeltaSensor`, `S3KeySensor`, `TableauJobStatusSensor`.
 - **Three sources, first hit wins.**
-  1. *Rendered fields* of the newest task instance among the last 5 runs. Every string equal to
-     another DAG id is a target. Keys such as `external_task_id` or `task_ids` give the target tasks.
-  2. *DAG source* (`GET /api/v2/dagSources/{dag_id}`): quoted string literals equal to another
-     DAG id. This catches `@task.sensor` functions whose arguments are not templated.
-  3. *Task log* of that task instance: words equal to another DAG id, for example
-     `DAG orders_dag has successfully executed.`
-  Only ids of DAGs that exist (in the catalog) count, and never the sensor's own DAG.
-- **Data wait or deploy guard.** A sensor whose `states` is exactly `["running"]` waits for the
-  other DAG *not* to run. It is a deploy guard, not a data dependency. Guards are drawn dashed and
-  grey, hidden until *show deploy guards* is on (hash flag `guards`), and `downstream`/`upstream`
+  1. *Rendered fields* of the newest task instance with rendered fields among the last 5 runs.
+     Every string equal to another DAG id is a target. Keys such as `external_task_id` or
+     `task_ids` give the target tasks.
+  2. *DAG source* (`GET /api/v2/dagSources/{dag_id}`), parsed with Python's `ast` and scoped to
+     the sensor: the call with `task_id="<task>"`, the function its `python_callable` names, and
+     the `@task.sensor` function of that name. String constants there that equal another DAG id
+     are targets. If that finds nothing, or the file does not parse, the whole file's string
+     literals count only when they name exactly one DAG. So a `TriggerDagRunOperator`, a
+     `doc_md` mention or a DAG factory listing many ids does not become a sensor target.
+  3. *Task log* of that task instance: a DAG id next to `dag_id=`, `dag:` or `DAG <id>`, for
+     example `DAG orders_dag has successfully executed.`, only when exactly one DAG matches.
+  Only ids of DAGs that exist (in the catalog) count, and never the sensor's own DAG. A target
+  the sensor's DAG already feeds directly (for example its own trigger target) is dropped.
+  A sensor whose lookups failed is recorded with source `error`, one where nothing matched with
+  `none`.
+- **Data wait or deploy guard.** A sensor whose rendered `op_kwargs.states` is exactly
+  `["running"]` waits for the other DAG *not* to run. It is a deploy guard, not a data
+  dependency; guards are only detected from rendered fields. Guards are drawn dashed and grey,
+  hidden until *show deploy guards* is on (hash flag `guards`), and `downstream`/`upstream`
   follow them only with `--include-guards`. Every other match is a data dependency.
 - **On the page.** An inferred link is a dashed sensor node between the two DAGs, with dashed
   edges. Its side panel says where it was found. The tag, active and linked filters treat it like
   any other sensor. The header shows `sensor links: N`.
 - **In the text queries.** `via` reads `sensor:<task> (inferred)`. `--no-inferred` ignores all
-  inferred links.
-- **Cost.** About 10 to 15 API calls per sensor: one task list per DAG, the recent runs, up to 5
-  task instances, the DAG source (once per DAG) and one log. A few hundred sensors take minutes.
+  inferred links. Live queries (no snapshot argument) infer too when `infer_sensors` is on in
+  the preset or environment. `--node-id` skips both the catalog and the inference.
+- **Cost.** One task list per DAG, then about 3 to 8 API calls per sensor: the recent runs, one
+  to five task instances, the DAG source (once per DAG) and at most one log. About a minute on
+  ~600 DAGs.
 - **Limits.** Matching is by DAG id text. A DAG id built at runtime, or a sensor that has never
-  run and does not name its target literally, is not found. A sensor that names several DAGs links
-  to all of them.
+  run and does not name its target literally, is not found. A sensor that names several DAGs in
+  its own code links to all of them.
 
 **In the Airflow plugin.** The page never infers while you wait. Set
-`AIRFLOW_DEPGRAPH_INFER_SENSORS=true` on the api-server, and a background thread starts on the
-first page request. It refreshes every `AIRFLOW_DEPGRAPH_INFER_INTERVAL_MINUTES` (default 30) and
-shares the page's limit of concurrent builds. Each refresh uses the session token of the most
-recent visitor with a valid session. Tokens are kept in memory only and never logged. Without a
-valid token the refresh waits for the next visitor. The header shows
-`sensor links: N, updated HH:MM UTC`, or that the first refresh is still running.
+`AIRFLOW_DEPGRAPH_INFER_SENSORS=true` on the api-server, and a background thread starts after
+the first page that Airflow served for a signed-in user. It refreshes every
+`AIRFLOW_DEPGRAPH_INFER_INTERVAL_MINUTES` (default 30) and has its own concurrency slot, so it
+never takes one of the page builds.
 
-The links are computed with the permissions of a recently active user. On Airflow before 3.1.8
-every user sees every DAG anyway. From 3.1.8 on, each viewer still only gets the DAGs of their
-own `/ui/dependencies` and DAG catalog, and inferred links that touch any other DAG are dropped
-from their page.
+- **Token.** A refresh uses the session token of the most recent visitor, and only a token that
+  Airflow has just accepted for a page, with at least 15 minutes left. Tokens stay in memory in
+  the process that received them and are never logged or written to disk. After Airflow rejects
+  the token (401/403) the refresh stops, keeps the previous links, and runs again as soon as the
+  next visitor arrives.
+- **Failed refreshes.** A refresh that is aborted, or in which more than 20 % of the sensors
+  fail, keeps the previous links and is retried after a few minutes.
+- **Several api-server workers.** One process per host refreshes: the one holding an `flock`
+  on `airflow-depgraph-infer.lock`. It writes the links to `airflow-depgraph-inferred.json`
+  (written atomically, mode 600), and every worker serves the newest content of that file. When
+  the refreshing process exits, another worker takes over on its next check. Both files live in
+  the system temp directory, or in `AIRFLOW_DEPGRAPH_STATE_DIR`. Without `fcntl` (not POSIX)
+  each process refreshes on its own.
+- **Header.** `sensor links: N, updated HH:MM UTC`, or that the first refresh is still running.
+
+The background calls run as the most recent visitor, and Airflow's audit log shows them as that
+user. On Airflow before 3.1.8 every user sees every DAG anyway. From 3.1.8 on, each viewer still
+only gets the DAGs of their own `/ui/dependencies` and DAG catalog, and inferred links that
+touch any other DAG are dropped from their page. An inferred link does tell anyone who may see
+both DAGs that one waits on the other, even if that viewer could not read the sensor's code.
 
 ## How failing is decided
 

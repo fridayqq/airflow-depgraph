@@ -102,10 +102,12 @@ class AirflowClient:
         """Every DAG the user may see, stale ones included (they are dropped at render time)."""
         out: list[dict] = []
         while True:
-            page = self.get("/api/v2/dags", limit=page_size, offset=len(out),
-                            exclude_stale="false").get("dags") or []
+            data = self.get("/api/v2/dags", limit=page_size, offset=len(out), exclude_stale="false")
+            page = data.get("dags") or []
             out.extend(page)
-            if len(page) < page_size:
+            total = data.get("total_entries")
+            done = len(out) >= total if isinstance(total, int) else len(page) < page_size
+            if not page or done:
                 return out
 
     def dag(self, dag_id: str) -> dict:

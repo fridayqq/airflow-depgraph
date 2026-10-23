@@ -62,6 +62,10 @@ def _live_snapshot(client: AirflowClient, s: Settings, node_id: str | None) -> S
     except SnapshotError as exc:
         raise SnapshotError(f"{exc} (Airflow {version or 'version unknown'})") from None
     snap = snapmod.new(nodes, edges, s.url, version)
+    if node_id:
+        note = " and no sensor inference" if s.infer_sensors else ""
+        print(f"note: --node-id fetches a subgraph: no DAG catalog{note}", file=sys.stderr)
+        return snap
     try:
         snap.catalog = snapmod.build_catalog(client.list_dags())
     except ApiError as exc:
@@ -111,8 +115,8 @@ def _infer(client: AirflowClient, snap: Snapshot) -> list[dict]:
 def _fetch_snapshot(args: argparse.Namespace, s: Settings) -> Snapshot:
     client = _client(s, args)
     snap = _live_snapshot(client, s, args.node_id)
-    if s.infer_sensors:
-        snap = dataclasses.replace(snap, inferred=_infer(client, snap))
+    if s.infer_sensors and not args.node_id:
+        snap.inferred = _infer(client, snap)
     snap.dags = _fetch_dags(client, snap, s)
     return snap
 
@@ -240,6 +244,8 @@ def _query(args: argparse.Namespace, direction: str) -> int:
     else:
         client = _client(s, args)
         snap = _live_snapshot(client, s, None)
+        if s.infer_sensors:
+            snap.inferred = _infer(client, snap)
     hits = _walk(snap, args.dag, direction, args.depth,
                  inferred=not args.no_inferred, guards=args.include_guards)
     info = {h.dag_id: _dag_info(client, snap, h.dag_id) for h in hits}
@@ -308,7 +314,7 @@ def _parser() -> argparse.ArgumentParser:
                             help="also fetch the task ids of every DAG")
     fetch_opts.add_argument("--infer-sensors", action="store_true", default=None,
                             help="also infer DAG dependencies from Python and custom sensors "
-                                 "(about 10-15 API calls per sensor)")
+                                 "(about 3-8 API calls per sensor)")
     fetch_opts.add_argument("--node-id", help="fetch only the subgraph around this node id, e.g. dag:my_dag")
 
     render_opts = argparse.ArgumentParser(add_help=False)

@@ -197,3 +197,11 @@ def test_render_header_counts_sensor_links(inferred_snapshot, small_snapshot):
     assert "sensor links: 2, updated 10:30 UTC" in render(inferred_snapshot, Settings(),
                                                           inferred_updated="10:30 UTC")
     assert "sensor links:" not in render(small_snapshot, Settings())
+
+
+def test_view_drops_inferred_sensors_of_stale_dags(inferred_snapshot):
+    import dataclasses
+    snap = dataclasses.replace(inferred_snapshot, inferred=inferred_snapshot.inferred + [
+        {"dag": "dag_m_stale", "task": "w", "source": "rendered", "targets": ["dag_a"], "kind": "data"}])
+    ids = set(_by_id(build_view(snap, Settings())))
+    assert "sensor-inferred:dag_m_stale:w" not in ids and "dag:dag_m_stale" not in ids

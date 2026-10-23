@@ -77,6 +77,11 @@ class Snapshot:
     catalog: dict[str, dict] | None = None
     inferred: list[dict] | None = None
 
+    def __setattr__(self, name: str, value: object) -> None:
+        if name in ("nodes", "edges", "inferred"):
+            self.__dict__.pop("graph", None)        # rebuild the cached graph on next use
+        object.__setattr__(self, name, value)
+
     @cached_property
     def graph(self) -> Graph:
         """Explicit plus inferred dependencies; deploy guards are left out."""
@@ -95,6 +100,21 @@ def _usable(entry: object) -> bool:
             and entry.get("source") not in (None, "none") and bool(entry["targets"]))
 
 
+def _one_hop_down(nodes: list[dict], edges: list[dict]) -> dict[str, set[str]]:
+    """{dag_id: DAG ids it reaches directly or through one asset/trigger/sensor node}."""
+    dag = {n["id"] for n in nodes if n["type"] == "dag"}
+    out: dict[str, list[str]] = {}
+    for e in edges:
+        out.setdefault(e["source_id"], []).append(e["target_id"])
+    down: dict[str, set[str]] = {}
+    for d in dag:
+        hits = set()
+        for x in out.get(d, ()):
+            hits.update([x] if x in dag else [y for y in out.get(x, ()) if y in dag])
+        down[d[4:]] = {h[4:] for h in hits}
+    return down
+
+
 def with_inferred(nodes: list[dict], edges: list[dict], inferred: list[dict] | None, *,
                   include_guards: bool = False) -> tuple[list[dict], list[dict]]:
     """Add one sensor link node per inferred sensor: dag:<target> -> node -> dag:<sensor DAG>."""
@@ -102,6 +122,7 @@ def with_inferred(nodes: list[dict], edges: list[dict], inferred: list[dict] | N
         return nodes, edges
     nodes, edges = list(nodes), list(edges)
     ids = {n["id"] for n in nodes}
+    explicit_down = _one_hop_down(nodes, edges)
 
     def add(node: dict) -> None:
         if node["id"] not in ids:
@@ -112,13 +133,16 @@ def with_inferred(nodes: list[dict], edges: list[dict], inferred: list[dict] | N
         if not _usable(e) or (e.get("kind") == "guard" and not include_guards):
             continue
         link = f"sensor-inferred:{e['dag']}:{e['task']}"
-        if link in ids:
+        # A DAG the sensor DAG already feeds (e.g. its trigger target) is not what it waits on.
+        targets = [t for t in dict.fromkeys(e["targets"]) if isinstance(t, str)
+                   and t != e["dag"] and t not in explicit_down.get(e["dag"], ())]
+        if link in ids or not targets:
             continue
         add({"id": link, "label": e["task"], "type": "sensor", "inferred": e["source"],
              "kind": e.get("kind") or "data"})
         add({"id": "dag:" + e["dag"], "label": e["dag"], "type": "dag"})
         edges.append({"source_id": link, "target_id": "dag:" + e["dag"]})
-        for target in dict.fromkeys(t for t in e["targets"] if isinstance(t, str)):
+        for target in targets:
             add({"id": "dag:" + target, "label": target, "type": "dag"})
             edges.append({"source_id": "dag:" + target, "target_id": link})
     return nodes, edges

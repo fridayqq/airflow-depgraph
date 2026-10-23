@@ -335,3 +335,31 @@ def test_fetch_without_infer_flag_has_no_inferred(tmp_path, live):
     out = tmp_path / "s.json"
     assert cli.main(["fetch", "--url", URL, "-o", str(out)]) == 0
     assert "inferred" not in json.loads(out.read_text())
+
+
+def _sensor_on_z(monkeypatch):
+    def tasks(self, dag_id):
+        return [{"task_id": "wait_x", "operator_name": "PythonSensor"}] if dag_id == "z" else []
+    monkeypatch.setattr(FakeClient, "tasks", tasks)
+    monkeypatch.setattr(FakeClient, "dag_runs", lambda self, d, limit: [{"dag_run_id": "r1"}])
+    monkeypatch.setattr(FakeClient, "task_instance", lambda self, d, r, t: {
+        "dag_run_id": r, "rendered_fields": {"op_kwargs": {"external_dag_id": "x"}}}, raising=False)
+
+
+def test_node_id_skips_catalog_and_inference(tmp_path, live, monkeypatch, capsys):
+    _sensor_on_z(monkeypatch)
+    out = tmp_path / "s.json"
+    assert cli.main(["fetch", "--url", URL, "-o", str(out), "--infer-sensors", "--node-id", "dag:x"]) == 0
+    data = json.loads(out.read_text())
+    assert "catalog" not in data and "inferred" not in data
+    assert "no sensor inference" in capsys.readouterr().err
+
+
+def test_live_query_infers_when_setting_is_on(live, monkeypatch, capsys):
+    _sensor_on_z(monkeypatch)
+    assert cli.main(["downstream", "x", "--url", URL]) == 0
+    assert " z " not in capsys.readouterr().out
+    monkeypatch.setenv("AIRFLOW_DEPGRAPH_INFER_SENSORS", "true")
+    assert cli.main(["downstream", "x", "--url", URL]) == 0
+    captured = capsys.readouterr()
+    assert "via sensor:wait_x (inferred)" in captured.out and "inferring sensors 1/1" in captured.err

@@ -166,3 +166,27 @@ def test_visible_inferred_drops_dags_the_viewer_cannot_see():
                 {"dag": "b", "task": "u", "source": "logs", "targets": ["hidden"]}]
     assert visible_inferred(inferred, {"a", "b"}) == [
         {"dag": "b", "task": "t", "source": "rendered", "targets": ["a"]}]
+
+
+def test_graph_is_rebuilt_when_inferred_or_edges_change(small_snapshot, inferred_snapshot):
+    import dataclasses
+    snap = dataclasses.replace(small_snapshot)
+    assert reach_dags(snap.graph, "dag:dag_a", "downstream") == 9
+    snap.inferred = inferred_snapshot.inferred
+    assert reach_dags(snap.graph, "dag:dag_a", "downstream") == 10
+    snap.edges = []
+    assert reach_dags(snap.graph, "dag:dag_a", "downstream") == 0
+
+
+def test_with_inferred_drops_targets_the_sensor_dag_already_feeds():
+    from airflow_depgraph.snapshot import with_inferred
+    nodes = [{"id": "dag:w", "label": "w", "type": "dag"}, {"id": "dag:t", "label": "t", "type": "dag"},
+             {"id": "trigger:w:t:kick", "label": "kick", "type": "trigger"}]
+    edges = [{"source_id": "dag:w", "target_id": "trigger:w:t:kick"},
+             {"source_id": "trigger:w:t:kick", "target_id": "dag:t"}]
+    inferred = [{"dag": "w", "task": "wait", "source": "source", "targets": ["t", "u"]},
+                {"dag": "w", "task": "only_t", "source": "source", "targets": ["t"]}]
+    n, e = with_inferred(nodes, edges, inferred)
+    assert {"source_id": "dag:u", "target_id": "sensor-inferred:w:wait"} in e
+    assert not any(x["target_id"] == "sensor-inferred:w:wait" and x["source_id"] == "dag:t" for x in e)
+    assert not any(x["id"] == "sensor-inferred:w:only_t" for x in n)

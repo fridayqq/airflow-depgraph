@@ -198,17 +198,26 @@ class InferClient:
         return ""
 
 
-def _cache(t, interval=60):
+@pytest.fixture
+def cache(tmp_path):
     from airflow_depgraph.web import InferenceCache
     InferClient.made.clear()
     InferClient.error = None
-    return InferenceCache("u", interval, client_factory=InferClient, wall_clock=lambda: t[0],
-                          start_thread=False)
+    made = []
+
+    def make(t, interval=60, **kw):
+        c = InferenceCache("u", interval, client_factory=InferClient, wall_clock=lambda: t[0],
+                           start_thread=False, state_dir=tmp_path, **kw)
+        made.append(c)
+        return c
+    yield make
+    for c in made:
+        c.close()
 
 
-def test_inference_refresh_uses_token_and_respects_interval():
+def test_inference_refresh_uses_token_and_respects_interval(cache, tmp_path):
     t = [1000.0]
-    c = _cache(t)
+    c = cache(t)
     tok = _jwt({"exp": 5000})
     assert c.current() is None and c.due()
     c.offer(tok)
@@ -217,24 +226,37 @@ def test_inference_refresh_uses_token_and_respects_interval():
     assert at == 1000.0 and InferClient.made == [tok]
     assert inferred == [{"dag": "waiter", "task": "wait_a", "operator": "PythonSensor",
                          "source": "rendered", "targets": ["a"], "target_tasks": [], "kind": "data"}]
+    assert tok not in (tmp_path / "airflow-depgraph-inferred.json").read_text()
     t[0] = 1030
     assert not c.due()
     t[0] = 1061
     assert c.due()
 
 
-def test_inference_without_token_skips_and_stays_due():
+def test_inference_without_token_skips_and_stays_due(cache):
     t = [1000.0]
-    c = _cache(t)
+    c = cache(t)
     c.offer("not-a-jwt")
     c.offer(_jwt({"exp": 10}))          # expired
     assert c.refresh() is False and InferClient.made == [] and c.due()
 
 
-def test_inference_uses_most_recent_token_and_drops_rejected_one():
+def test_inference_needs_15_minutes_left_on_the_token(cache):
     t = [1000.0]
-    c = _cache(t)
-    first, second = _jwt({"exp": 5000, "sub": "1"}), _jwt({"exp": 5000, "sub": "2"})
+    c = cache(t)
+    c.offer(_jwt({"exp": 1000 + 14 * 60}))
+    assert c.refresh() is False and InferClient.made == []
+    c.offer(_jwt({"exp": 1000 + 16 * 60}))
+    assert c.refresh() is True
+    c.offer(_jwt({"sub": "no-exp"}))
+    t[0] = 2000
+    assert c.refresh() is True
+
+
+def test_inference_uses_most_recent_token_and_drops_rejected_one(cache):
+    t = [1000.0]
+    c = cache(t)
+    first, second = _jwt({"exp": 9000, "sub": "1"}), _jwt({"exp": 9000, "sub": "2"})
     c.offer(first)
     c.offer(second)
     c.refresh()
@@ -243,16 +265,69 @@ def test_inference_uses_most_recent_token_and_drops_rejected_one():
     t[0] = 2000
     assert c.refresh() is False
     assert c.current()[1] == 1000.0          # previous result kept
-    t[0] = 3000
+    assert c.due()                           # a new accepted visitor refreshes at once
+    t[0] = 2010
     assert c.refresh() is False and InferClient.made == [second, second]  # token forgotten
+    InferClient.error = None
+    c.offer(first)
+    assert c.refresh() is True and c.current()[1] == 2010
 
 
-def test_inference_token_expiring_before_cycle_is_not_used():
+def test_inference_keeps_previous_result_when_too_many_sensors_fail(cache, monkeypatch):
     t = [1000.0]
-    c = _cache(t)
+    c = cache(t)
+    c.offer(_jwt({"exp": 9000}))
+    assert c.refresh() is True
+    monkeypatch.setattr(InferClient, "dag_source", lambda self, d: (_ for _ in ()).throw(
+        ApiError("500", 500, "/src")))
+    monkeypatch.setattr(InferClient, "task_instance", lambda self, *a: {"rendered_fields": {}})
+    t[0] = 2000
+    assert c.refresh() is False
+    assert c.current()[1] == 1000.0 and c.current()[0][0]["source"] == "rendered"
+    assert not c.due()                       # retried after a few minutes, not every poll
+    t[0] = 2000 + 301
+    assert c.due()
+
+
+def test_inference_aborts_on_auth_error_mid_cycle(cache, monkeypatch):
+    t = [1000.0]
+    c = cache(t)
+    c.offer(_jwt({"exp": 9000}))
+    monkeypatch.setattr(InferClient, "task_instance", lambda self, *a: (_ for _ in ()).throw(
+        ApiError("403", 403, "/ti")))
+    assert c.refresh() is False and c.current() is None
+
+
+def test_inference_token_expiring_before_cycle_is_not_used(cache):
+    t = [1000.0]
+    c = cache(t)
     c.offer(_jwt({"exp": 1500}))
     t[0] = 1600
     assert c.refresh() is False and InferClient.made == []
+
+
+def test_one_refresher_per_host_and_takeover(cache):
+    t = [1000.0]
+    a, b = cache(t), cache(t)
+    tok = _jwt({"exp": 9000})
+    a.offer(tok)
+    b.offer(tok)
+    assert a.refresh() is True
+    assert b.refresh() is False and InferClient.made == [tok]       # b is not the leader
+    assert b.current() == a.current()                              # but serves a's file
+    a.close()                                                      # leader process gone
+    t[0] = 2000
+    assert b.refresh() is True and b.current()[1] == 2000
+    assert a.current()[1] == 2000                                  # a re-reads the newer file
+
+
+def test_without_shared_state_every_process_refreshes(cache):
+    t = [1000.0]
+    a, b = cache(t, shared=False), cache(t, shared=False)
+    for c in (a, b):
+        c.offer(_jwt({"exp": 9000}))
+        assert c.refresh() is True
+    assert len(InferClient.made) == 2
 
 
 class _Stub:
@@ -294,3 +369,14 @@ def test_page_before_first_inference_says_so():
 def test_page_without_infer_setting_has_no_inference():
     b = PageBuilder("u", Settings(), client_factory=FakeClient)
     assert b.inference is None and "sensor links:" not in b.page("tok", None, False)
+
+
+def test_rejected_token_is_never_offered():
+    b = PageBuilder("u", Settings(infer_sensors=True), client_factory=FakeClient)
+    b.inference = _Stub(None)
+    with pytest.raises(ApiError):
+        b.page("bad", None, False)
+    assert b.inference.offered == []
+    b.page("tok", None, False)
+    b.page("tok", None, False)                # cache hit offers again
+    assert b.inference.offered == ["tok", "tok"]

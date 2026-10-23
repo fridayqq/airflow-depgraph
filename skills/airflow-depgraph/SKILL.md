@@ -22,16 +22,16 @@ escaping.
    the user's Airflow: check with `airflow-depgraph presets --preset NAME` (prints the resolved
    settings) before using it. Without a matching preset you need the base URL and a user name:
    `airflow-depgraph fetch --url https://airflow.example.com --user viewer --with-status -o deps.json`
-   (password from `AIRFLOW_DEPGRAPH_PASSWORD`, or piped with `--password-stdin`). The password goes in an environment
-   variable (`AIRFLOW_DEPGRAPH_PASSWORD`) or via `--password-stdin`; there is no `--password`
-   flag. Never write the password into a command, file, preset or chat reply. If the user will
+   (password from `AIRFLOW_DEPGRAPH_PASSWORD` or `--password-stdin`; there is no `--password`
+   flag). Never write the password into a command, file, preset or chat reply. If the user will
    query this Airflow again, offer a preset: `airflow-depgraph presets --example` →
    `~/.config/airflow-depgraph/presets/<name>.toml` with `url`, `user_env`, `password_env` (or
-   `password_cmd` for a keychain / password-manager command). `--preset ./any/path.toml` also
-   works, so the file can live anywhere.
+   `password_cmd` for a keychain / password-manager command). `--preset` also takes a path.
 3. **Snapshot.** `airflow-depgraph fetch --preset NAME --with-status -o deps.json`
    (`--url U --user X` instead of `--preset`). Add `--with-tasks` when the question is about
-   tasks (report refreshes). Reuse a snapshot younger than ~30 min instead of refetching.
+   tasks (report refreshes). Add `--infer-sensors` to recover dependencies Airflow does not
+   show: `PythonSensor`, `@task.sensor` and custom sensors waiting on another DAG (about a
+   minute on ~600 DAGs). Reuse a snapshot younger than ~30 min instead of refetching.
 4. **Answer in text** from the snapshot, print the tool output as is, and state the snapshot
    time from the header line (it may be hours or days old):
    - `airflow-depgraph downstream DAG deps.json [--depth N] [--json]`
@@ -49,9 +49,15 @@ escaping.
 failing DAGs and their chain · `hideAssets` DAG→DAG view · `hl` preset highlight. Combine with
 commas: `#q=dag_a+,hideAssets`.
 
+By default the page shows only linked, active DAGs with the preset `tags`. Negations: `allLinks`
+(unlinked too), `paused`, `allTags`; `conn` adds DAGs one link away from tagged ones; `guards`
+shows inferred deploy guards. Text queries are never filtered: they follow inferred links unless
+`--no-inferred`, and deploy guards only with `--include-guards`.
+
 ## Reading the output
 
 - `via asset:…` names the asset/trigger/sensor joining two DAGs; links never count as hops.
+  `sensor:<task> (inferred)` comes from `--infer-sensors`.
 - Schedule `Asset` → that DAG did not run while the upstream was broken (nothing stale).
   `Asset or <cron>` → its cron run used stale data. `⏸ paused` → not an incident.
 - Rings: red = pipeline failure, amber = only test tasks failed. No ring = healthy, paused, or no
