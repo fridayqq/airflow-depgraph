@@ -60,7 +60,7 @@ Tested on Airflow 3.1.5 and 3.3.2, at the root and under a sub-path such as `/ai
 **Install on Astro.** Add one line to the project's `requirements.txt` and rebuild:
 
 ```text
-airflow-depgraph @ https://github.com/fridayqq/airflow-depgraph/archive/refs/tags/v0.4.0.tar.gz
+airflow-depgraph @ https://github.com/fridayqq/airflow-depgraph/archive/refs/tags/v0.5.0.tar.gz
 ```
 
 ```bash
@@ -246,7 +246,7 @@ Next:
   airflow-depgraph graph --preset prod -o graph.html
 ```
 
-If the sign-in fails you can retry, skip the checks (the questions then come without suggestions) or quit. Ctrl-C or Ctrl-D at any point stops with exit code 130 and writes nothing. An existing preset is only replaced after you confirm, or with `--force`. The file goes to `--dir`, else `$AIRFLOW_DEPGRAPH_PRESETS`, else `~/.config/airflow-depgraph/presets`.
+If the sign-in fails you can retry, skip the checks (the questions then come without suggestions) or quit. Ctrl-C or Ctrl-D at any point stops with exit code 130 and writes nothing; quitting at the sign-in prompt or answering n to the final "Write it?" prints "not written" and exits 1. With a password command, the sign-in check runs that command; if `AIRFLOW_DEPGRAPH_PASSWORD` is set in your shell it is read first on later runs, and init warns about it. An existing preset is only replaced after you confirm, or with `--force`. The file goes to `--dir`, else `$AIRFLOW_DEPGRAPH_PRESETS`, else `~/.config/airflow-depgraph/presets`.
 
 **Without a terminal.** `--yes` asks nothing and takes every value from flags; a missing NAME or `--url` is a usage error (exit 2). The sign-in check still runs unless you pass `--no-check`, and a failure writes nothing (exit 3 for credentials, 4 for an unreachable Airflow). Credentials come from the usual places (`--password-stdin`, the password variable, `password_cmd`); `--user` is used for the check only and never written.
 
