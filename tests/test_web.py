@@ -289,13 +289,39 @@ def test_inference_keeps_previous_result_when_too_many_sensors_fail(cache, monke
     assert c.due()
 
 
-def test_inference_aborts_on_auth_error_mid_cycle(cache, monkeypatch):
+def test_inference_aborts_on_401_mid_cycle(cache, monkeypatch):
     t = [1000.0]
     c = cache(t)
     c.offer(_jwt({"exp": 9000}))
     monkeypatch.setattr(InferClient, "task_instance", lambda self, *a: (_ for _ in ()).throw(
-        ApiError("403", 403, "/ti")))
+        ApiError("401", 401, "/ti")))
     assert c.refresh() is False and c.current() is None
+
+
+def test_inference_aborts_on_403_from_list_dags(cache):
+    t = [1000.0]
+    c = cache(t)
+    c.offer(_jwt({"exp": 9000}))
+    InferClient.error = ApiError("403", 403, "/api/v2/dags")
+    assert c.refresh() is False and c.current() is None and c.due()
+
+
+def test_one_unreadable_dag_does_not_abort_the_cycle(cache, monkeypatch):
+    t = [1000.0]
+    c = cache(t)
+    c.offer(_jwt({"exp": 9000}))
+    monkeypatch.setattr(InferClient, "list_dags", lambda self: [{"dag_id": d} for d in (
+        "a", "waiter", "secret", "w2", "w3", "w4", "w5")])
+    real = InferClient.tasks
+
+    def tasks(self, dag_id):
+        if dag_id == "secret":
+            raise ApiError("403", 403, "/tasks")
+        return [{"task_id": "wait_a", "operator_name": "PythonSensor"}] if dag_id.startswith("w") else real(self, dag_id)
+    monkeypatch.setattr(InferClient, "tasks", tasks)
+    assert c.refresh() is True                               # 1 error of 6 entries: under 20 %
+    got = {(e["dag"], e["source"]) for e in c.current()[0]}
+    assert ("secret", "error") in got and ("waiter", "rendered") in got and len(got) == 6
 
 
 def test_inference_token_expiring_before_cycle_is_not_used(cache):

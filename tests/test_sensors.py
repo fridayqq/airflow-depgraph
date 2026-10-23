@@ -4,7 +4,7 @@ from airflow_depgraph.client import ApiError
 from airflow_depgraph.sensors import (fetch_tasks, infer_sensor_edges, is_candidate,
                                       parse_log, parse_source)
 
-KNOWN = {"dag_a", "dag_b", "dag_c", "waiter", "orders_dag"}
+KNOWN = {"dag_a", "dag_b", "dag_c", "waiter", "orders_dag", "edw_dbt-prod01-evening_run"}
 
 
 class FakeClient:
@@ -134,7 +134,7 @@ def test_failing_stage_does_not_skip_the_next_and_marks_error():
 
 
 @pytest.mark.parametrize("kind", ["source", "log"])
-def test_auth_errors_abort_the_run(kind):
+def test_401_aborts_the_run(kind):
     c = FakeClient(runs={"waiter": ["r1"]}, tis={("waiter", "r1", "wait"): {"rendered_fields": {}}},
                    fail={kind: ApiError("401", 401, "/x")})
     with pytest.raises(ApiError):
@@ -174,6 +174,13 @@ def test_non_candidates_are_skipped_and_output_sorted():
         "dag_c": [sensor(), sensor("ext", "ExternalTaskSensor"), sensor("op", "PythonOperator")],
         "dag_b": [sensor()]}, workers=2)
     assert [(r["dag"], r["task"]) for r in out] == [("dag_b", "wait"), ("dag_c", "wait")]
+
+
+def test_log_context_found_for_and_for_dag():
+    line = "No successful DAG run found for edw_dbt-prod01-evening_run today."
+    assert parse_log(line, KNOWN, "waiter") == ["edw_dbt-prod01-evening_run"]
+    assert parse_log("still waiting for DAG orders_dag", KNOWN, "waiter") == ["orders_dag"]
+    assert parse_log("nothing found for today, orders_dag", KNOWN, "waiter") == []
 
 
 def test_log_needs_context_and_exactly_one_dag():
@@ -229,4 +236,25 @@ def test_source_falls_back_to_file_only_for_a_single_dag():
 
 def test_fetch_tasks_maps_errors_to_empty():
     got = fetch_tasks(FakeClient(), ["a", "hidden"], workers=2)
-    assert got == {"a": [{"task_id": "t", "operator_name": "PythonSensor"}], "hidden": []}
+    assert got == {"a": [{"task_id": "t", "operator_name": "PythonSensor"}], "hidden": None}
+
+
+def test_one_dag_403_is_skipped_as_error_not_aborting():
+    class Partial(FakeClient):
+        def tasks(self, dag_id):
+            if dag_id == "dag_b":
+                raise ApiError("403", 403, "/tasks")
+            return [sensor()]
+    c = Partial(sources={"waiter": "x = 'dag_a'"})
+    tasks = fetch_tasks(c, ["waiter", "dag_b"])
+    assert tasks["dag_b"] is None
+    out = infer_sensor_edges(c, KNOWN, tasks)
+    assert [(r["dag"], r["task"], r["source"]) for r in out] == [
+        ("dag_b", "*", "error"), ("waiter", "wait", "source")]
+
+
+@pytest.mark.parametrize("kind", ["source", "log"])
+def test_403_on_one_sensor_lookup_is_an_error_entry(kind):
+    c = FakeClient(runs={"waiter": ["r1"]}, tis={("waiter", "r1", "wait"): {"rendered_fields": {}}},
+                   fail={kind: ApiError("403", 403, "/x")})
+    assert _one(c)["source"] == "error"

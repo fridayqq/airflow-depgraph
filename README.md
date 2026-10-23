@@ -261,12 +261,14 @@ Airflow's `/ui/dependencies` only knows `ExternalTaskSensor`. Many DAGs wait on 
      are targets. If that finds nothing, or the file does not parse, the whole file's string
      literals count only when they name exactly one DAG. So a `TriggerDagRunOperator`, a
      `doc_md` mention or a DAG factory listing many ids does not become a sensor target.
-  3. *Task log* of that task instance: a DAG id next to `dag_id=`, `dag:` or `DAG <id>`, for
-     example `DAG orders_dag has successfully executed.`, only when exactly one DAG matches.
+  3. *Task log* of that task instance: a DAG id next to `dag_id=`, `dag:`, `DAG <id>`,
+     `found for <id>` or `for DAG <id>`, for example `No successful DAG run found for
+     orders_dag today.`, only when exactly one DAG matches.
   Only ids of DAGs that exist (in the catalog) count, and never the sensor's own DAG. A target
   the sensor's DAG already feeds directly (for example its own trigger target) is dropped.
   A sensor whose lookups failed is recorded with source `error`, one where nothing matched with
-  `none`.
+  `none`. A DAG whose task list cannot be read (for example a 403 because this user may not read
+  it) is one `error` entry with task `*`. Only a 401 aborts the run.
 - **Data wait or deploy guard.** A sensor whose rendered `op_kwargs.states` is exactly
   `["running"]` waits for the other DAG *not* to run. It is a deploy guard, not a data
   dependency; guards are only detected from rendered fields. Guards are drawn dashed and grey,
@@ -294,10 +296,12 @@ never takes one of the page builds.
 - **Token.** A refresh uses the session token of the most recent visitor, and only a token that
   Airflow has just accepted for a page, with at least 15 minutes left. Tokens stay in memory in
   the process that received them and are never logged or written to disk. After Airflow rejects
-  the token (401/403) the refresh stops, keeps the previous links, and runs again as soon as the
-  next visitor arrives.
-- **Failed refreshes.** A refresh that is aborted, or in which more than 20 % of the sensors
-  fail, keeps the previous links and is retried after a few minutes.
+  the token (a 401, or a 403 on the first call) the refresh stops, keeps the previous links, and runs again as soon as the
+  next visitor arrives. A 403 on a single DAG does not stop the refresh: that DAG counts as an
+  error (see below), since from 3.1.8 on it only means this user may not read that DAG.
+- **Failed refreshes.** A refresh that is aborted (401, or 401/403 from the first `GET
+  /api/v2/dags`), or in which more than 20 % of the entries are errors, keeps the previous links.
+  An aborted one runs again with the next accepted visitor, any other after a few minutes.
 - **Several api-server workers.** One process per host refreshes: the one holding an `flock`
   on `airflow-depgraph-infer.lock`. It writes the links to `airflow-depgraph-inferred.json`
   (written atomically, mode 600), and every worker serves the newest content of that file. When

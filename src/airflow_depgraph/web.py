@@ -19,7 +19,7 @@ from . import snapshot as snapmod
 from .client import AirflowClient, ApiError
 from .presets import Settings
 from .render import render
-from .sensors import AUTH_STATUSES, fetch_tasks, infer_sensor_edges
+from .sensors import fetch_tasks, infer_sensor_edges
 
 try:
     import fcntl
@@ -200,7 +200,8 @@ class InferenceCache:
             with self._builds:
                 inferred = self._infer(token)
         except ApiError as exc:
-            if exc.status in AUTH_STATUSES:
+            # A 401 anywhere, or a 403 from the first call (list_dags): the token is no good.
+            if exc.status in (401, 403):
                 with self._lock:
                     if self._token == token:
                         self._token = None

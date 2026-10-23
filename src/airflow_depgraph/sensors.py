@@ -21,12 +21,16 @@ RUNS_LOOKBACK = 5
 _TASK_KEYS = ("external_task_id", "external_task_ids", "task_ids", "task_id")
 _SOURCE_LITERAL = re.compile(r"""["']([A-Za-z0-9_.-]{4,})["']""")
 # A DAG id in a log line only counts next to "dag_id=", "dag:" or "DAG <id>".
-_LOG_DAG = re.compile(r"""\b(?:dag(?:_id)?\s*[=:]\s*['"]?|DAG\s+|dag\s+)([A-Za-z0-9_.-]+)""")
-AUTH_STATUSES = (401, 403)
+_LOG_DAG = re.compile(r"""\b(?:dag(?:_id)?\s*[=:]\s*['"]?|DAG\s+|dag\s+|found\s+for\s+|for\s+DAG\s+)"""
+                      r"""([A-Za-z0-9_.-]+)""")
+# Only an expired or invalid token aborts a run. A 403 on one DAG means this user may not read
+# that DAG (per-DAG permissions, Airflow >= 3.1.8): that DAG or sensor becomes an "error" entry.
+ABORT_STATUSES = (401,)
+WHOLE_DAG = "*"     # task of the entry recorded for a DAG whose task list could not be read
 
 
 def _auth_error(exc: BaseException) -> bool:
-    return isinstance(exc, ApiError) and exc.status in AUTH_STATUSES
+    return isinstance(exc, ApiError) and exc.status in ABORT_STATUSES
 
 
 def is_candidate(operator: str | None) -> bool:
@@ -223,30 +227,33 @@ def _resolve_dag(client: AirflowClient, dag_id: str, tasks: list[dict], known: s
     return results
 
 
-def fetch_tasks(client: AirflowClient, dag_ids: list[str], workers: int = 8) -> dict[str, list[dict]]:
-    """{dag_id: GET /dags/{id}/tasks items}; [] when unreadable, but 401/403 abort."""
-    def one(d: str) -> list[dict]:
+def fetch_tasks(client: AirflowClient, dag_ids: list[str],
+                workers: int = 8) -> dict[str, list[dict] | None]:
+    """{dag_id: GET /dags/{id}/tasks items}; None when unreadable (403 included), 401 aborts."""
+    def one(d: str) -> list[dict] | None:
         try:
             return client.tasks(d)
         except ApiError as exc:
-            if exc.status in AUTH_STATUSES:
+            if exc.status in ABORT_STATUSES:
                 raise
-            return []
+            return None
     with ThreadPoolExecutor(max_workers=workers) as pool:
         return dict(zip(dag_ids, pool.map(one, dag_ids)))
 
 
 def infer_sensor_edges(client: AirflowClient, catalog_ids: Iterable[str],
-                       tasks_by_dag: dict[str, list[dict]], *, workers: int = 8,
+                       tasks_by_dag: dict[str, list[dict] | None], *, workers: int = 8,
                        progress: Callable[[str], None] | None = None) -> list[dict]:
-    """One entry per candidate sensor. `source` is "none" when nothing was found and "error"
-    when a call failed on the way; a 401/403 aborts the whole run with ApiError."""
+    """One entry per candidate sensor, plus one (task "*") per DAG whose tasks were unreadable.
+    `source` is "none" when nothing was found and "error" when a call failed on the way;
+    a 401 aborts the whole run with ApiError."""
     known = set(catalog_ids)
+    results: list[dict] = [_entry(d, {"task_id": WHOLE_DAG}, "error")
+                           for d, tasks in tasks_by_dag.items() if tasks is None]
     jobs = {d: [t for t in tasks if isinstance(t, dict) and t.get("task_id")
                 and is_candidate(t.get("operator_name"))]
-            for d, tasks in tasks_by_dag.items()}
+            for d, tasks in tasks_by_dag.items() if tasks is not None}
     jobs = {d: ts for d, ts in jobs.items() if ts}
-    results: list[dict] = []
     pool = ThreadPoolExecutor(max_workers=workers)
     try:
         futures = {pool.submit(_resolve_dag, client, d, ts, known): d for d, ts in jobs.items()}
