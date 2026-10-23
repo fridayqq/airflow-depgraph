@@ -554,3 +554,13 @@ def test_has_nonempty_task_asks_for_every_nonempty_state():
 
     assert AirflowClient(URL, "t", opener=opener).has_nonempty_task("d", "r") is True
     assert seen[0]["limit"] == ["1"] and seen[0]["state"] == list(client_mod.NONEMPTY_TI_STATES)
+
+
+def test_network_errors_are_flagged_as_network(monkeypatch):
+    monkeypatch.setattr(client_mod.time, "sleep", lambda s: None)
+    with pytest.raises(ApiError) as ei:
+        AirflowClient(URL, "t", opener=_raw_opener(exc=ConnectionResetError("reset"))).dependencies()
+    assert ei.value.network is True and ei.value.status is None
+    with pytest.raises(ApiError) as ei:
+        AirflowClient(URL, "t", opener=_raw_opener(b"<html>login</html>")).dependencies()
+    assert ei.value.network is False

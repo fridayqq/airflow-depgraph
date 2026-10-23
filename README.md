@@ -170,7 +170,19 @@ The password is never accepted as a flag, so it stays out of shell history and p
 3. The command in `password_cmd`, for example `pass show airflow/example`, taking its stdout.
 4. An interactive prompt, when stdin is a terminal.
 
-The user comes from `--user` or the variable named by `user_env` (`AIRFLOW_DEPGRAPH_USER` by default). A preset can only change the variable name through `user_env`, never hold the user itself. `--token` supplies a bearer token and skips the login.
+The user comes from `--user` or the variable named by `user_env` (`AIRFLOW_DEPGRAPH_USER` by default). A preset can only change the variable name through `user_env`, never hold the user itself. `--token-stdin` reads a bearer token from the first line of stdin and skips the login; `--token` does the same from the command line, with a warning, since it is visible in shell history and `ps`. `AIRFLOW_DEPGRAPH_TOKEN` works too. The two flags cannot be combined.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success |
+| 1 | Any other error, for example a bad snapshot or preset |
+| 2 | Usage error (bad or conflicting arguments) |
+| 3 | Credentials: no username or password, rejected login, or 401/403 from Airflow |
+| 4 | Airflow unreachable: no response, timeout or DNS failure |
+| 5 | DAG not in the dependency graph |
+| 130 | Interrupted |
 
 ## Presets
 

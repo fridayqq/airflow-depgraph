@@ -34,6 +34,16 @@ class CliError(Exception):
     pass
 
 
+class DagNotFound(CliError):
+    pass
+
+
+# Exit codes (2 is argparse's usage error).
+EXIT_OK, EXIT_ERROR, EXIT_USAGE = 0, 1, 2
+EXIT_CREDENTIALS, EXIT_NETWORK, EXIT_DAG_NOT_FOUND, EXIT_INTERRUPTED = 3, 4, 5, 130
+_AUTH_PATHS = ("/auth/token", "/ui/dependencies")
+
+
 # ---------- shared plumbing ----------
 
 
@@ -43,6 +53,13 @@ def _settings(args: argparse.Namespace) -> Settings:
                      "infer_sensors", "timeout", "workers", "bulk_status")}
     if getattr(args, "tags", None):
         cli["tags"] = tuple(args.tags)
+    if getattr(args, "token_stdin", False):
+        cli["token"] = sys.stdin.readline().strip()
+        if not cli["token"]:
+            raise CliError("--token-stdin: no token on the first line of stdin")
+    elif getattr(args, "token", None):
+        print("warning: --token is visible in shell history and ps; "
+              "prefer AIRFLOW_DEPGRAPH_TOKEN or --token-stdin", file=sys.stderr)
     return resolve(cli, os.environ, args.preset)
 
 
@@ -106,7 +123,7 @@ def _unlinked(snap: Snapshot, dag: str, direction: str, args: argparse.Namespace
     ids = sorted(set(g.dag_ids) | set((snap.catalog or {}).keys()))
     close = difflib.get_close_matches(dag, ids, n=3, cutoff=0.6)
     suffix = f" — did you mean: {', '.join(close)}?" if close else ""
-    raise CliError(f"dag '{dag}' is not in the dependency graph "
+    raise DagNotFound(f"dag '{dag}' is not in the dependency graph "
                    f"({len(g.dag_ids)} DAGs known){suffix}")
 
 
@@ -440,7 +457,10 @@ def _parser() -> argparse.ArgumentParser:
     common.add_argument("--url", help="Airflow base URL")
     common.add_argument("--user", help="Airflow user name")
     common.add_argument("--password-stdin", action="store_true", help="read the password from stdin")
-    common.add_argument("--token", help="bearer token (skips login)")
+    token_group = common.add_mutually_exclusive_group()
+    token_group.add_argument("--token", help="bearer token (skips login); visible in shell history")
+    token_group.add_argument("--token-stdin", action="store_true",
+                             help="read the bearer token from the first line of stdin")
 
     net_opts = argparse.ArgumentParser(add_help=False)
     net_opts.add_argument("--timeout", type=float, default=None, metavar="SECONDS",
@@ -577,16 +597,29 @@ def _parser() -> argparse.ArgumentParser:
     return p
 
 
+def _exit_code(exc: Exception) -> int:
+    if isinstance(exc, CredentialsError):
+        return EXIT_CREDENTIALS
+    if isinstance(exc, ApiError):
+        if exc.status in (401, 403) and exc.path in _AUTH_PATHS:
+            return EXIT_CREDENTIALS
+        if exc.network:
+            return EXIT_NETWORK
+    if isinstance(exc, DagNotFound):
+        return EXIT_DAG_NOT_FOUND
+    return EXIT_ERROR
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         return args.func(args)
     except (SnapshotError, PresetError, CredentialsError, ApiError, CliError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
-        return 1
+        return _exit_code(exc)
     except KeyboardInterrupt:
         print("interrupted", file=sys.stderr)
-        return 130
+        return EXIT_INTERRUPTED
 
 
 if __name__ == "__main__":

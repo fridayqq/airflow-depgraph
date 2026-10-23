@@ -107,8 +107,8 @@ def test_upstream_arrow(capsys):
     assert "  ←1 dag_c" in out
 
 
-def test_downstream_unknown_dag_exit_1(capsys):
-    assert cli.main(["downstream", "nope", FIX]) == 1
+def test_downstream_unknown_dag_exit_5(capsys):
+    assert cli.main(["downstream", "nope", FIX]) == 5
     err = capsys.readouterr().err
     assert "error: " in err and "is not in the dependency graph (13 DAGs known)" in err
 
@@ -483,14 +483,14 @@ def test_guard_only_dag_hints_include_guards(tmp_path, inferred_snapshot, capsys
 
 
 def test_unknown_dag_suggests_close_names(capsys):
-    assert cli.main(["downstream", "dag_x_crom", FIX]) == 1
+    assert cli.main(["downstream", "dag_x_crom", FIX]) == 5
     err = capsys.readouterr().err
     assert "is not in the dependency graph" in err
     assert "did you mean: dag_x_cron" in err
 
 
 def test_unknown_dag_without_close_names_has_no_suffix(capsys):
-    assert cli.main(["downstream", "zzzzzzzz", FIX]) == 1
+    assert cli.main(["downstream", "zzzzzzzz", FIX]) == 5
     err = capsys.readouterr().err
     assert "is not in the dependency graph" in err
     assert "did you mean" not in err
@@ -553,7 +553,7 @@ def test_stale_catalog_dag_gets_unlinked_error_not_no_dependencies(tmp_path, cap
                                           "schedule": None, "owners": []})
     path = tmp_path / "s.json"
     snapmod.dump(dataclasses.replace(snap, catalog=catalog), path)
-    assert cli.main(["downstream", "dag_old", str(path)]) == 1
+    assert cli.main(["downstream", "dag_old", str(path)]) == 5
     captured = capsys.readouterr()
     assert "is not in the dependency graph" in captured.err
     assert "exists but has no explicit dependencies" not in captured.out
@@ -741,3 +741,88 @@ def test_no_bulk_status_flag_turns_bulk_off():
     s = cli._settings(cli._parser().parse_args(["fetch", "--no-bulk-status"]))
     assert s.bulk_status is False
     assert cli._settings(cli._parser().parse_args(["fetch"])).bulk_status is True
+
+
+def _raiser(exc):
+    def boom(*args, **kwargs):
+        raise exc
+    return staticmethod(boom)
+
+
+def test_exit_3_missing_credentials(tmp_path, capsys):
+    assert cli.main(["fetch", "--url", URL, "-o", str(tmp_path / "s.json")]) == 3
+    assert "no username" in capsys.readouterr().err
+
+
+def test_exit_3_rejected_login(monkeypatch, tmp_path, live, capsys):
+    monkeypatch.setattr(cli.AirflowClient, "login", _raiser(
+        ApiError("authentication failed (401): check username/password", 401, "/auth/token")))
+    assert cli.main(["fetch", "--url", URL, "-o", str(tmp_path / "s.json")]) == 3
+
+
+def test_exit_3_forbidden_dependencies(monkeypatch, tmp_path, live):
+    class Forbidden(FakeClient):
+        def dependencies(self, node_id=None):
+            raise ApiError("403 on /ui/dependencies: this user cannot see DAGs", 403, "/ui/dependencies")
+    monkeypatch.setattr(cli, "AirflowClient", Forbidden)
+    assert cli.main(["fetch", "--url", URL, "-o", str(tmp_path / "s.json")]) == 3
+
+
+def test_exit_4_no_response(monkeypatch, tmp_path, live):
+    class Down(FakeClient):
+        def dependencies(self, node_id=None):
+            raise ApiError("no response from https://airflow.example.com (dns)", None, "/ui/dependencies",
+                           network=True)
+    monkeypatch.setattr(cli, "AirflowClient", Down)
+    assert cli.main(["fetch", "--url", URL, "-o", str(tmp_path / "s.json")]) == 4
+
+
+def test_exit_1_other_api_error(monkeypatch, tmp_path, live):
+    class Broken(FakeClient):
+        def dependencies(self, node_id=None):
+            raise ApiError("500 on /ui/dependencies: Internal", 500, "/ui/dependencies")
+    monkeypatch.setattr(cli, "AirflowClient", Broken)
+    assert cli.main(["fetch", "--url", URL, "-o", str(tmp_path / "s.json")]) == 1
+
+
+def test_exit_1_non_json_is_not_network(monkeypatch, tmp_path, live):
+    class Html(FakeClient):
+        def dependencies(self, node_id=None):
+            raise ApiError("non-JSON response from /ui/dependencies", None, "/ui/dependencies")
+    monkeypatch.setattr(cli, "AirflowClient", Html)
+    assert cli.main(["fetch", "--url", URL, "-o", str(tmp_path / "s.json")]) == 1
+
+
+def test_exit_130_interrupted(monkeypatch, capsys):
+    def interrupt(args):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(cli, "cmd_render", interrupt)
+    assert cli.main(["render", FIX, "-o", "x.html"]) == 130
+
+
+def test_exit_2_usage_error():
+    with pytest.raises(SystemExit) as ei:
+        cli.main(["downstream"])
+    assert ei.value.code == 2
+
+
+def test_token_stdin_reads_first_line(monkeypatch):
+    import io
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("tok-from-stdin\nignored\n"))
+    s = cli._settings(cli._parser().parse_args(["fetch", "--url", URL, "--token-stdin"]))
+    assert s.token == "tok-from-stdin"
+
+
+def test_token_flag_warns_on_stderr(capsys):
+    s = cli._settings(cli._parser().parse_args(["fetch", "--url", URL, "--token", "t"]))
+    assert s.token == "t"
+    assert capsys.readouterr().err == (
+        "warning: --token is visible in shell history and ps; "
+        "prefer AIRFLOW_DEPGRAPH_TOKEN or --token-stdin\n")
+
+
+def test_token_and_token_stdin_together_is_usage_error(capsys):
+    with pytest.raises(SystemExit) as ei:
+        cli.main(["fetch", "--url", URL, "--token", "t", "--token-stdin"])
+    assert ei.value.code == 2
+    assert "not allowed with argument" in capsys.readouterr().err

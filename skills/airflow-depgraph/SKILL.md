@@ -74,4 +74,6 @@ shows inferred deploy guards. Text queries are never filtered: they follow infer
 | `dag 'x' is not in the dependency graph` | typo, or a cron-only DAG: those have no edges and are never in the graph |
 | `snapshot has no task lists` | refetch with `--with-tasks` |
 
+Exit codes: 3 = credentials, 4 = Airflow unreachable, 5 = unknown DAG.
+
 Only explicit Airflow dependencies are visible; table-level coupling without an asset is not.

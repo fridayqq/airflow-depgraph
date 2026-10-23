@@ -69,10 +69,12 @@ def _retry_after(headers) -> float | None:
 
 
 class ApiError(RuntimeError):
-    def __init__(self, message: str, status: int | None = None, path: str = ""):
+    def __init__(self, message: str, status: int | None = None, path: str = "",
+                 network: bool = False):
         super().__init__(message)
         self.status = status
         self.path = path
+        self.network = network      # no response at all: timeout, refused, DNS
 
 
 def _ti_key(ti: dict) -> tuple:
@@ -156,11 +158,12 @@ class AirflowClient:
     def _network_error(self, e: Exception, path: str) -> ApiError:
         if isinstance(e, TimeoutError):
             return ApiError(
-                f"timed out after {self.timeout:g}s waiting for {self.url}{path}", None, path)
+                f"timed out after {self.timeout:g}s waiting for {self.url}{path}", None, path,
+                network=True)
         if isinstance(e, urllib.error.URLError):
             return ApiError(
-                f"no response from {self.url} ({e.reason}) — VPN/DNS?", None, path)
-        return ApiError(f"network error on {path}: {e}", None, path)
+                f"no response from {self.url} ({e.reason}) — VPN/DNS?", None, path, network=True)
+        return ApiError(f"network error on {path}: {e}", None, path, network=True)
 
     def _fetch(self, req: urllib.request.Request) -> bytes:
         """Response body of one request; HTTP error statuses raise urllib.error.HTTPError."""
