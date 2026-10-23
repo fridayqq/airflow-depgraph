@@ -64,3 +64,16 @@ def test_new_stamps_utc_fetched_at():
     snap = new(nodes=[], edges=[], source=None, airflow_version=None)
     assert snap.format == 1
     assert len(snap.fetched_at) == 20 and snap.fetched_at.endswith("Z")
+
+
+def test_validate_adds_dag_nodes_airflow_omits():
+    # Airflow 3.1 lists a trigger edge to a DAG without listing that DAG as a node.
+    raw = {"nodes": [{"id": "dag:a", "label": "a", "type": "dag"},
+                     {"id": "trigger:a:b:t", "label": "t", "type": "trigger"}],
+           "edges": [{"source_id": "dag:a", "target_id": "trigger:a:b:t"},
+                     {"source_id": "trigger:a:b:t", "target_id": "dag:b"},
+                     {"source_id": "dag:a", "target_id": "asset:99"}]}
+    nodes, edges = validate_payload(raw)
+    assert {"id": "dag:b", "label": "b", "type": "dag"} in nodes
+    assert {"source_id": "trigger:a:b:t", "target_id": "dag:b"} in edges
+    assert all(e["target_id"] != "asset:99" for e in edges)

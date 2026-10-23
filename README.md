@@ -28,6 +28,47 @@ pipx install git+https://github.com/fridayqq/airflow-depgraph
 
 To run from a checkout, use `uv run airflow-depgraph ...`.
 
+## Airflow plugin
+
+The same package is also an Airflow 3 plugin. Installed into the Airflow image, it adds
+**Browse → DAG Dependencies**: the graph page inside the Airflow UI, for the signed-in user.
+Tested on Airflow 3.1.5 and 3.3.2, at the root and under a sub-path such as `/airflow/`.
+
+- **Data.** The page calls the api-server's own `/ui/dependencies` and REST API with the
+  user's session token, so every user sees exactly the DAGs they may read. Nothing else is
+  stored or configured.
+- **Sign-in.** Without a session (or with an expired one) the page redirects to the Airflow
+  login and comes back afterwards.
+- **Status rings.** Off by default because they cost one REST call per DAG. Open the page
+  with `?status=1`, or set `AIRFLOW_DEPGRAPH_WITH_STATUS=true`. Results are cached per user for
+  five minutes.
+- **Settings.** The same `AIRFLOW_DEPGRAPH_*` variables as the CLI (`..._HIGHLIGHT`,
+  `..._ASSET_LABEL_STRIP_PREFIX`, `..._TITLE`, `..._TESTS_TASK_REGEX`), or a preset named in
+  `AIRFLOW_DEPGRAPH_PRESET`, set on the api-server.
+
+**Install on Astro.** Add one line to the project's `requirements.txt` and rebuild:
+
+```text
+airflow-depgraph @ https://github.com/fridayqq/airflow-depgraph/archive/refs/tags/v0.2.0.tar.gz
+```
+
+```bash
+astro dev restart      # local / self-hosted Astro project
+# or: astro deploy     # Astro cloud
+```
+
+The archive URL needs no git in the image (Astro runtime images have none).
+
+**Install on other Airflow 3 images.** `pip install` the same URL into the image that runs
+the api-server (for example in your Dockerfile), then restart the api-server. Only the
+api-server needs it; installing it everywhere is harmless. The plugin is found through the
+`airflow.plugins` entry point, so nothing goes into the `plugins/` folder.
+
+**Check.** `airflow plugins` lists `airflow_depgraph`, and the menu shows the new item.
+
+**Behind a reverse proxy.** Set `[api] base_url` (`AIRFLOW__API__BASE_URL`) to the public URL,
+including the sub-path. The menu link and the "Open in Airflow" links are built from it.
+
 ## Claude Code skill
 
 The repo also ships a [Claude Code](https://claude.com/claude-code) skill,

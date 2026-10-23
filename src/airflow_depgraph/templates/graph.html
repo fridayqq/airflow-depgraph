@@ -214,7 +214,7 @@ function draw() {
     if (d.paused) g.select('circle,rect,path').attr('fill-opacity', .5);
     if (failing(d)) g.append('circle').attr('r', R + 3).attr('fill', 'none')
       .attr('stroke', d.fail.kind === 'tests' ? css('--warning') : css('--critical')).attr('stroke-width', 2.5);
-    if (d.type === 'dag' && (d.down >= 5 || failing(d))) g.append('text').attr('class', 'lbl').attr('dy', R + 10).attr('text-anchor', 'middle').text(d.label);
+    if (d.type === 'dag' && (SMALL || d.down >= 5 || failing(d))) g.append('text').attr('class', 'lbl').attr('dy', R + 10).attr('text-anchor', 'middle').text(d.label);
   });
   node.on('mouseenter', (ev, d) => { tip.style.display = 'block'; tip.innerHTML = `<b>${esc(d.label)}</b> ` + facts(d); })
     .on('mousemove', ev => { tip.style.left = (ev.clientX + 14) + 'px'; tip.style.top = (ev.clientY + 14) + 'px'; })
@@ -259,7 +259,7 @@ function renderSide(d, msg) {
   side.innerHTML = `<h2>${esc(d.label)}</h2><div>${facts(d)}</div>` +
     `<h3>↓ Downstream (${down.length})</h3><ul>${down.map(li).join('') || '<li class="hint">none</li>'}</ul>` +
     `<h3>↑ Upstream (${up.length})</h3><ul>${up.map(li).join('') || '<li class="hint">none</li>'}</ul>` +
-    (d.type === 'dag' && base ? `<p><a href="${esc(base + '/dags/' + encodeURIComponent(d.id.slice(4)))}" target="_blank" rel="noopener">Open in Airflow ↗</a></p>` : '');
+    (d.type === 'dag' && base ? `<p><a href="${esc(base + '/dags/' + encodeURIComponent(d.id.slice(4)))}" ${LINK_TARGET}>Open in Airflow ↗</a></p>` : '');
   side.querySelectorAll('li[data-id]').forEach(el => el.onclick = () => { select(el.dataset.id); fitTo([el.dataset.id]); });
 }
 
@@ -288,6 +288,10 @@ function fitTo(ids) {
 }
 
 const SEARCH_RE = /__SEARCH_RE__/;
+// A sandboxed iframe (the Airflow plugin page) blocks popups: open links in the frame there.
+// Small graphs label every DAG; large ones only hubs and failing DAGs.
+const SMALL = DATA.nodes.filter(n => n.type === 'dag').length <= 60;
+const LINK_TARGET = window.self !== window.top ? '' : ' target="_blank" rel="noopener"';
 // "2+dag+3": leading +/digits = upstream (depth), trailing +/digits = downstream. No "+" at all = plain substring.
 function parseQuery(raw) {
   const t = raw.trim();

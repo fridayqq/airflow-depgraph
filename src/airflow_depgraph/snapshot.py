@@ -35,8 +35,15 @@ def validate_payload(raw: dict) -> tuple[list[dict], list[dict]]:
         if not isinstance(edge, dict) or any(k not in edge for k in _EDGE_KEYS):
             raise SnapshotError(f"{prefix}: edge without source_id/target_id: {edge!r}")
 
-    # Permission-filtered payloads may reference nodes they omit; drop those edges.
+    # Airflow 3.1 can list an edge to a DAG it omits from nodes (e.g. a trigger target):
+    # add those DAG nodes. Other dangling edges (permission-filtered) are dropped.
+    nodes = list(nodes)
     node_ids = {n["id"] for n in nodes}
+    for edge in edges:
+        for end in (edge["source_id"], edge["target_id"]):
+            if isinstance(end, str) and end.startswith("dag:") and end not in node_ids:
+                nodes.append({"id": end, "label": end[4:], "type": "dag"})
+                node_ids.add(end)
     kept = [e for e in edges if e["source_id"] in node_ids and e["target_id"] in node_ids]
     return nodes, kept
 

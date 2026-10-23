@@ -1,6 +1,6 @@
 [project]
 name = "airflow-depgraph"
-version = "0.1.0"
+version = "0.2.0"
 description = "Fetch, query and render the Airflow 3 cross-DAG dependency graph"
 readme = "README.md"
 license = "MIT"
@@ -17,6 +17,9 @@ classifiers = [
 
 [project.scripts]
 airflow-depgraph = "airflow_depgraph.cli:main"
+
+[project.entry-points."airflow.plugins"]
+airflow_depgraph = "airflow_depgraph.airflow_plugin:DepGraphPlugin"
 
 [project.urls]
 Homepage = "https://github.com/fridayqq/airflow-depgraph"
