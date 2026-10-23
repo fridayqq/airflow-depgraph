@@ -399,3 +399,13 @@ def test_fetch_warns_on_stderr_when_status_unavailable(tmp_path, live, monkeypat
     captured = capsys.readouterr()
     assert "warning: status unavailable for 1 of 2 DAGs (first error: 500 on /dagRuns)" in captured.err
     assert "warning" not in captured.out
+
+
+def test_tasks_matching_rejects_snapshot_path_as_regex(capsys):
+    assert cli.main(["downstream", "dag_e", "--tasks-matching", FIX]) == 1
+    assert "looks like a snapshot file" in capsys.readouterr().err
+
+
+def test_tasks_matching_rejects_json_name_as_regex(capsys):
+    assert cli.main(["downstream", "dag_e", "--tasks-matching", "snapshot.json"]) == 1
+    assert "looks like a snapshot file" in capsys.readouterr().err

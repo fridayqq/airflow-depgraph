@@ -220,7 +220,7 @@ name = "example"
 # highlight_label = "Highlight"
 # Regex that marks a task as a test task (case-insensitive).
 # tests_task_regex = '(^|[._-])tests?([._-]|$)'
-# Default regex for --tasks-matching. Nothing is filtered at load time; all tasks are fetched.
+# Regex used by --tasks-preset. Nothing is filtered at load time; all tasks are fetched.
 # task_query_regex = "^(extract|load)_"
 # How many recent runs to look at when computing the status.
 # status_runs_lookback = 5

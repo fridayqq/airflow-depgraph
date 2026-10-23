@@ -240,6 +240,9 @@ def _query(args: argparse.Namespace, direction: str) -> int:
     pattern = args.tasks_matching
     if pattern == "":
         raise CliError("--tasks-matching needs a non-empty REGEX")
+    if pattern and (pattern.endswith(".json") or Path(pattern).is_file()):
+        raise CliError(f"--tasks-matching got '{pattern}', which looks like a snapshot file; "
+                       "put the snapshot before the flag or pass a REGEX")
     if args.tasks_preset:
         pattern = s.task_query_regex
         if not pattern:
