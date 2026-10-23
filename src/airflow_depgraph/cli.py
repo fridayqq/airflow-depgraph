@@ -68,14 +68,13 @@ def _settings(args: argparse.Namespace) -> Settings:
     return resolve(cli, os.environ, args.preset)
 
 
-def _client(s: Settings, args: argparse.Namespace, env=None) -> AirflowClient:
-    env = os.environ if env is None else env
+def _client(s: Settings, args: argparse.Namespace) -> AirflowClient:
     if not s.url:
         raise CliError("no Airflow URL: pass --url, set AIRFLOW_DEPGRAPH_URL or use a preset")
     if s.token:
         return AirflowClient(s.url, token=s.token, timeout=s.timeout)
-    user = resolve_user(s, env)
-    password = resolve_password(s, env, stdin_password=args.password_stdin,
+    user = resolve_user(s, os.environ)
+    password = resolve_password(s, os.environ, stdin_password=args.password_stdin,
                                 stdin=sys.stdin, isatty=sys.stdin.isatty())
     return AirflowClient.login(s.url, user, password, timeout=s.timeout)
 
@@ -452,7 +451,8 @@ def cmd_presets(args: argparse.Namespace) -> int:
                 continue
             if isinstance(value, tuple):
                 value = ", ".join(value) or None
-            print(f"{f.name} = {'(unset)' if value is None else value}")
+            shown = "(unset)" if value is None else "(empty)" if value == "" else value
+            print(f"{f.name} = {shown}")
     return 0
 
 
@@ -470,8 +470,10 @@ def _tty() -> bool:
 def cmd_init(args: argparse.Namespace) -> int:
     if args.json and not args.discover:
         raise UsageError("--json only works with --discover")
-    if args.discover and (args.yes or args.name or args.force):
-        raise UsageError("--discover only reads: it cannot be combined with --yes, NAME or --force")
+    if args.discover and (args.yes or args.name or args.force or args.no_check or args.tags
+                          or args.dir):
+        raise UsageError("--discover only reads: it cannot be combined with --yes, NAME, "
+                         "--force, --no-check, --tag or --dir")
     given = _init_given(args)
     try:
         wizard.validate_given(given)
@@ -530,16 +532,13 @@ def _init_batch(args: argparse.Namespace, given: dict, target: Path) -> int:
     path = target / f"{name}.toml"
     if path.exists() and not args.force:
         raise FileExistsError(f"{path} already exists; pass --force to overwrite it")
-    env = os.environ
-    shadow = Settings.password_env
-    if given["password_cmd"] and not given["password_env"] and shadow in env:
-        print(f"warning: {wizard.shadow_warning(shadow)}", file=sys.stderr)
-        env = {k: v for k, v in env.items() if k != shadow}   # the check runs the command
+    if given["password_cmd"] and not given["password_env"]:
+        args.password_env = ""      # as in the written preset: the command alone is the source
     if not args.no_check:
         wizard.check_health(AirflowClient, url, given["timeout"] or Settings.timeout)
         args.url = url
         s = _settings(args)
-        client = _client(s, args, env)
+        client = _client(s, args)
         if given["tags"]:
             try:
                 known = {t for t, _ in wizard.tag_counts(client.list_dags())}

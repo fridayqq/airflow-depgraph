@@ -32,7 +32,7 @@ def resolve_password(
 ) -> str:
     if stdin_password:
         return stdin.readline().rstrip("\r\n")
-    if env.get(s.password_env):
+    if s.password_env and env.get(s.password_env):
         return env[s.password_env]
     if s.password_cmd:
         done = run_cmd(s.password_cmd, shell=True, capture_output=True, text=True)
@@ -43,8 +43,8 @@ def resolve_password(
         return done.stdout.strip()
     if isatty:
         return prompt("Airflow password: ")
+    source = f"set ${s.password_env}, " if s.password_env else ""
     raise CredentialsError(
-        "no password: use --password-stdin, set $"
-        f"{s.password_env}, set password_cmd in the preset, "
+        f"no password: use --password-stdin, {source}set password_cmd in the preset, "
         "or run on a TTY for an interactive prompt"
     )

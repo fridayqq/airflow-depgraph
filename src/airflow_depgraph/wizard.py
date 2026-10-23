@@ -168,11 +168,6 @@ def plural(n: int, noun: str) -> str:
     return f"{n} {noun}" + ("" if n == 1 else "s")
 
 
-def shadow_warning(name: str) -> str:
-    return (f"${name} is set and is read before password_cmd; "
-            "unset it or choose a different variable name")
-
-
 def suggest_with_status(n_dags: int) -> bool:
     return n_dags <= STATUS_LIMIT
 
@@ -305,6 +300,8 @@ def render_preset(values: Mapping[str, object]) -> str:
         lines.append("")
         lines.extend(f"# {c}" for c in comment)
         if key in values:
+            if key == "password_env" and values[key] == "":
+                lines.append("# empty: the password comes from password_cmd only")
             lines.append(f"{key} = {_toml_value(values[key])}")
         else:
             shown = _EXAMPLES.get(key, _DEFAULTS.get(key))
@@ -316,8 +313,9 @@ def build_values(name: str, url: str, chosen: Mapping[str, object]) -> dict:
     """Preset keys for the answers; keys left at None are not written."""
     values: dict[str, object] = {"name": name, "url": url,
                                  "user_env": chosen.get("user_env") or _DEFAULTS["user_env"]}
-    if chosen.get("password_env") or not chosen.get("password_cmd"):
-        values["password_env"] = chosen.get("password_env") or _DEFAULTS["password_env"]
+    # an empty name makes resolve_password skip the env lookup and run the command
+    values["password_env"] = (chosen.get("password_env")
+                              or ("" if chosen.get("password_cmd") else _DEFAULTS["password_env"]))
     if chosen.get("password_cmd"):
         values["password_cmd"] = chosen["password_cmd"]
     values["with_status"] = bool(chosen.get("with_status"))
@@ -365,7 +363,8 @@ def written_message(path: Path, name: str, values: Mapping[str, object],
     lines = [f"✓ wrote {_tilde(path)}", "", "Next:"]
     if values["user_env"] not in env:
         lines.append(f"  export {values['user_env']}=…")
-    if "password_cmd" not in values and values["password_env"] not in env:
+    if (values["password_env"] and "password_cmd" not in values
+            and values["password_env"] not in env):
         lines.append(f"  export {values['password_env']}=…")
     try:
         found = find_preset(name, env).resolve() == path.resolve()
@@ -511,9 +510,10 @@ def run_interactive(p: Prompter, given: Mapping[str, object], *, env: Mapping[st
     p.say("\n[4/7] Password source")
     _ask_password_source(p, given, chosen, env)
 
+    values_preview = build_values("", "", chosen)
     settings = Settings(
         url=url, user=user, user_env=chosen["user_env"],
-        password_env=chosen.get("password_env") or _DEFAULTS["password_env"],
+        password_env=values_preview["password_env"],
         password_cmd=chosen.get("password_cmd"), token=token, timeout=timeout,
         workers=given.get("workers") or _DEFAULTS["workers"])
 
@@ -522,11 +522,7 @@ def run_interactive(p: Prompter, given: Mapping[str, object], *, env: Mapping[st
     if no_check:
         p.dim("skipped (--no-check): no suggestions from Airflow")
     else:
-        check_env = env
-        if chosen.get("password_cmd") and not chosen.get("password_env"):
-            # the check must run the command, not pick up an unrelated default variable
-            check_env = {k: v for k, v in env.items() if k != settings.password_env}
-        client = _sign_in(p, settings, check_env, client_cls)
+        client = _sign_in(p, settings, env, client_cls)
     if client is False:     # the user chose to quit
         return 1
 
@@ -644,8 +640,6 @@ def _ask_password_source(p: Prompter, given: Mapping[str, object], chosen: dict,
                   "     security find-generic-password -s airflow -w\n"
                   "     op read op://vault/airflow/password")
             chosen["password_cmd"] = p.ask("Command that prints the password")
-        if penv is None and _DEFAULTS["password_env"] in env:
-            p.warn(shadow_warning(_DEFAULTS["password_env"]))
     p.dim("The password itself is never stored.")
 
 

@@ -355,7 +355,7 @@ def test_password_cmd_source(tmp_path):
     finally:
         w.resolve_password = orig
     data = load(tmp_path / "presets" / "p1.toml")
-    assert data["password_cmd"] == "pass show airflow/prod" and "password_env" not in data
+    assert data["password_cmd"] == "pass show airflow/prod" and data["password_env"] == ""
     assert ran == ["pass show airflow/prod"] and PW not in out.getvalue()
     assert "export AIRFLOW_DEPGRAPH_PASSWORD" not in out.getvalue()
 
@@ -518,7 +518,7 @@ def test_yes_happy_path(tmp_path, live, capsys):
     path = tmp_path / "d" / "p1.toml"
     assert load(path) == {
         "name": "p1", "url": URL, "user_env": "AIRFLOW_DEPGRAPH_USER",
-        "password_cmd": "echo hunter2", "with_status": True, "infer_sensors": False,
+        "password_cmd": "echo hunter2", "password_env": "", "with_status": True, "infer_sensors": False,
         "tags": ["team-a", "nope"], "title": "T",
         "asset_label_strip_prefix": "s3://bucket/", "highlight": "^o",
         "status_runs_lookback": 3}
@@ -526,7 +526,7 @@ def test_yes_happy_path(tmp_path, live, capsys):
     assert f"wrote {path}" in cap.out and "Next:" in cap.out
     # the command was run for the check, not the (set) default password variable
     assert live.logins == [(URL, "u", "hunter2")]
-    assert "AIRFLOW_DEPGRAPH_PASSWORD is set and is read before password_cmd" in cap.err
+    assert "is read before" not in cap.err
     assert PW not in cap.out + cap.err + path.read_text()
     assert path.stat().st_mode & 0o777 == 0o644
 
@@ -609,8 +609,7 @@ def test_init_has_no_preset_flag(capsys):
 
 def test_discover_json_shape_and_writes_nothing(tmp_path, live, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    assert cli.main(["init", "--discover", "--json", "--url", URL, "--dir",
-                     str(tmp_path / "d")]) == 0
+    assert cli.main(["init", "--discover", "--json", "--url", URL]) == 0
     out = capsys.readouterr().out
     data = json.loads(out)
     assert set(data) == {"url", "airflow_version", "scheduler", "dags", "tags", "assets",
@@ -618,8 +617,7 @@ def test_discover_json_shape_and_writes_nothing(tmp_path, live, capsys, monkeypa
     assert data["url"] == URL and data["dags"]["total"] == 5
     assert data["tags"][0] == {"name": "team-a", "dags": 3}
     assert PW not in out
-    assert list(tmp_path.iterdir()) == [tmp_path / "xdg"] or not (tmp_path / "d").exists()
-    assert not (tmp_path / "d").exists()
+    assert not (tmp_path / "xdg").exists() and list(tmp_path.iterdir()) == []
 
 
 def test_discover_text_report(tmp_path, live, capsys):
@@ -691,7 +689,8 @@ def _fixed_run_cmd(monkeypatch, out):
     return ran
 
 
-def test_command_source_is_checked_even_when_default_env_var_is_set(tmp_path, monkeypatch):
+def test_command_source_check_and_later_runs_use_the_command(tmp_path, monkeypatch):
+    from airflow_depgraph import auth
     ran = _fixed_run_cmd(monkeypatch, "from-cmd")
     fk = fake()
     answers = ["p1", URL, "U", "2", "pass show a", "-", "0", "n", "n", "", "", "n"]
@@ -699,15 +698,31 @@ def test_command_source_is_checked_even_when_default_env_var_is_set(tmp_path, mo
     env = {"U": "bob", "AIRFLOW_DEPGRAPH_PASSWORD": "unrelated"}
     assert run(p, tmp_path, client=fk, env=env) == 0
     assert ran == ["pass show a"] and fk.logins == [(URL, "bob", "from-cmd")]
-    assert "$AIRFLOW_DEPGRAPH_PASSWORD is set and is read before password_cmd" in out.getvalue()
-    assert "password_env" not in load(tmp_path / "presets" / "p1.toml")
+    path = tmp_path / "presets" / "p1.toml"
+    assert load(path)["password_env"] == ""
+    assert "# empty: the password comes from password_cmd only" in path.read_text()
+    assert "export AIRFLOW_DEPGRAPH_PASSWORD" not in out.getvalue()
+    # a later run resolves the written preset to the same source
+    s = presets.resolve({}, env, str(path))
+    got = auth.resolve_password(s, env, stdin_password=False, stdin=None, isatty=False,
+                                run_cmd=lambda cmd, **kw: type("R", (), {
+                                    "returncode": 0, "stdout": "from-cmd\n", "stderr": ""})())
+    assert got == "from-cmd"
 
 
-def test_no_shadow_warning_when_default_env_var_is_unset(tmp_path, monkeypatch):
-    _fixed_run_cmd(monkeypatch, "x")
-    p, _, out = prompter(["p1", URL, "U", "2", "pass show a", "-", "0", "n", "n", "", "", "n"])
-    assert run(p, tmp_path, env={"U": "bob"}) == 0
-    assert "is read before password_cmd" not in out.getvalue()
+def test_empty_password_env_error_does_not_mention_a_variable():
+    from airflow_depgraph import auth
+    s = presets.Settings(password_env="")
+    with pytest.raises(auth.CredentialsError) as ei:
+        auth.resolve_password(s, {"": "x"}, stdin_password=False, stdin=None, isatty=False)
+    assert "set $" not in str(ei.value) and "password_cmd" in str(ei.value)
+
+
+def test_presets_shows_empty_password_env(tmp_path, capsys):
+    path = tmp_path / "p.toml"
+    path.write_text('password_env = ""\npassword_cmd = "x"\n')
+    assert cli.main(["presets", "--preset", str(path)]) == 0
+    assert "password_env = (empty)" in capsys.readouterr().out
 
 
 def test_failing_password_cmd_offers_retry_and_never_prints_secrets(tmp_path, monkeypatch):
@@ -886,9 +901,22 @@ def test_yes_tags_survive_a_failing_list_dags(tmp_path, monkeypatch, capsys):
     assert load(tmp_path / "d" / "p1.toml")["tags"] == ["team-a"]
 
 
-def test_yes_shadow_warning_even_without_check(tmp_path, live, capsys):
-    assert cli.main(yes(tmp_path, "p1", "--url", URL, "--no-check", "--password-cmd", "x")) == 0
-    assert "is read before password_cmd" in capsys.readouterr().err
+def test_yes_command_source_checks_with_the_command(tmp_path, live, capsys):
+    assert cli.main(yes(tmp_path, "p1", "--url", URL, "--password-cmd", "echo hunter2")) == 0
+    assert live.logins == [(URL, "u", "hunter2")]
+    assert load(tmp_path / "d" / "p1.toml")["password_env"] == ""
+    assert "Next:" in capsys.readouterr().out
+
+
+def test_yes_command_with_explicit_env_var_keeps_it(tmp_path, live):
+    assert cli.main(yes(tmp_path, "p1", "--url", URL, "--no-check", "--password-cmd", "x",
+                        "--password-env", "MY_PW")) == 0
+    assert load(tmp_path / "d" / "p1.toml")["password_env"] == "MY_PW"
+
+
+@pytest.mark.parametrize("extra", [["--no-check"], ["--tag", "t"], ["--dir", "/x"]])
+def test_discover_rejects_init_only_flags(live, extra, capsys):
+    assert cli.main(["init", "--discover", "--url", URL, *extra]) == 2
 
 
 def test_color_only_when_no_color_is_unset(tmp_path, live, monkeypatch):

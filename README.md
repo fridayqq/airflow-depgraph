@@ -173,7 +173,7 @@ The password is never accepted as a flag, so it stays out of shell history and p
 
 1. `--password-stdin`, which reads one line from stdin.
 2. The environment variable named by `password_env`, `AIRFLOW_DEPGRAPH_PASSWORD` by default.
-3. The command in `password_cmd`, for example `pass show airflow/example`, taking its stdout.
+3. The command in `password_cmd` (`init` writes `password_env = ""` when the command is the only source, so the variable lookup is skipped), for example `pass show airflow/example`, taking its stdout.
 4. An interactive prompt, when stdin is a terminal.
 
 The user comes from `--user` or the variable named by `user_env` (`AIRFLOW_DEPGRAPH_USER` by default). A preset can only change the variable name through `user_env`, never hold the user itself. `--token-stdin` reads a bearer token from the first line of stdin and skips the login; `--token` does the same from the command line, with a warning, since it is visible in shell history and `ps`. `AIRFLOW_DEPGRAPH_TOKEN` works too. The two flags cannot be combined.
@@ -246,9 +246,9 @@ Next:
   airflow-depgraph graph --preset prod -o graph.html
 ```
 
-If the sign-in fails you can retry, skip the checks (the questions then come without suggestions) or quit. Ctrl-C or Ctrl-D at any point stops with exit code 130 and writes nothing; quitting at the sign-in prompt or answering n to the final "Write it?" prints "not written" and exits 1. With a password command, the sign-in check runs that command; if `AIRFLOW_DEPGRAPH_PASSWORD` is set in your shell it is read first on later runs, and init warns about it. An existing preset is only replaced after you confirm, or with `--force`. The file goes to `--dir`, else `$AIRFLOW_DEPGRAPH_PRESETS`, else `~/.config/airflow-depgraph/presets`.
+If the sign-in fails you can retry, skip the checks (the questions then come without suggestions) or quit. Ctrl-C or Ctrl-D at any point stops with exit code 130 and writes nothing; quitting at the sign-in prompt or answering n to the final "Write it?" prints "not written" and exits 1. With a password command, init writes `password_env = ""`, so the sign-in check and every later run use the command and never an environment variable. An existing preset is only replaced after you confirm, or with `--force`. The file goes to `--dir`, else `$AIRFLOW_DEPGRAPH_PRESETS`, else `~/.config/airflow-depgraph/presets`.
 
-**Without a terminal.** `--yes` asks nothing and takes every value from flags; a missing NAME or `--url` is a usage error (exit 2). The sign-in check still runs unless you pass `--no-check`, and a failure writes nothing (exit 3 for credentials, 4 for an unreachable Airflow). Credentials come from the usual places (`--password-stdin`, the password variable, `password_cmd`); `--user` is used for the check only and never written.
+**Without a terminal.** `--yes` asks nothing and takes every value from flags; a missing NAME or `--url` is a usage error (exit 2). `--discover` takes none of `--yes`, NAME, `--force`, `--no-check`, `--tag` or `--dir`. The sign-in check still runs unless you pass `--no-check`, and a failure writes nothing (exit 3 for credentials, 4 for an unreachable Airflow). Credentials come from the usual places (`--password-stdin`, the password variable, `password_cmd`); `--user` is used for the check only and never written.
 
 ```bash
 airflow-depgraph init prod --yes --url https://airflow.example.com \
