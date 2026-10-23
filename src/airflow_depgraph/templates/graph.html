@@ -383,8 +383,10 @@ function dagHops(startId, adj, depth) {
   return out.sort((a, b) => a.hop - b.hop || byId.get(a.id).label.localeCompare(byId.get(b.id).label));
 }
 
-// Unlinked (or guard-only, while guards are hidden) DAGs, by name.
-const listUnlinked = () => DATA.nodes.filter(n => n.type === 'dag' && loose(n)).sort((a, b) => a.label.localeCompare(b.label));
+// The tag and active filters the graph applies to DAGs; the side lists use the same ones.
+const passesDagFilters = n => (!(TAGS.length > 0 && box('onlyTags').checked) || hasTag(n)) && !(box('onlyActive').checked && n.paused);
+// Unlinked DAGs that pass the filters, by name. A DAG linked only by a deploy guard counts as linked.
+const listUnlinked = () => DATA.nodes.filter(n => n.type === 'dag' && n.unlinked && passesDagFilters(n)).sort((a, b) => a.label.localeCompare(b.label));
 
 // Which filters hide node n right now, as [checkbox id, label, value that shows n].
 function hiddenBy(n) {
@@ -447,7 +449,7 @@ function renderEmpty(msg) {
   let html = `<h2>${esc(msg || 'Click a node')}</h2>`;
   if (!msg) html += `<p class="hint">Node size shows how many DAGs depend on it, transitively. Click to highlight everything upstream and downstream. Double-click pins or releases a node. Scroll to zoom, drag to pan.<br><br>Search: <code>dag</code> focuses the first match, <code>+dag</code> adds its upstream, <code>dag+</code> its downstream, <code>2+dag+3</code> limits the depth.</p>`;
   if (box('blast').checked) {
-    const failingDags = DATA.nodes.filter(n => n.type === 'dag' && failing(n)).sort((a, b) => b.down - a.down || a.label.localeCompare(b.label));
+    const failingDags = DATA.nodes.filter(n => n.type === 'dag' && failing(n) && passesDagFilters(n)).sort((a, b) => b.down - a.down || a.label.localeCompare(b.label));
     html += `<h3>Failing DAGs (${failingDags.length})</h3><ul>` + failingDags.map(n =>
       `<li data-id="${esc(n.id)}">⚠ ${esc(n.label)} <span class="hint">· ${n.down} downstream</span></li>`).join('') + '</ul>';
   }
@@ -606,7 +608,7 @@ box('blast').addEventListener('change', () => { buildView(); if (!selectedId) re
 box('hl').addEventListener('change', () => { applyHighlight(); syncHash(); });
 box('fit').addEventListener('click', () => fitAll());
 box('showGuards').addEventListener('change', () => { buildAdj(); buildView(); if (selectedId) renderSide(byId.get(selectedId)); syncHash(); });
-svg.on('click', ev => { if (ev.target === svg.node()) { selectedId = null; searchKeep = null; renderSide(null); applyHighlight(); } });
+svg.on('click', ev => { if (ev.target === svg.node()) { selectedId = null; searchKeep = null; depthLimit = {up: Infinity, down: Infinity}; renderSide(null); applyHighlight(); syncHash(); } });
 if (window.matchMedia) {
   const mq = matchMedia('(prefers-color-scheme: dark)');
   (mq.addEventListener ? mq.addEventListener.bind(mq, 'change') : mq.addListener.bind(mq))(() => { if (sim) draw(); });
