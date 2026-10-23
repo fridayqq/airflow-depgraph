@@ -14,7 +14,6 @@ _EMPTY_STATES = {"skipped", "removed", None}
 # Run listings are tried over these windows in turn; the short one is cheap, and only DAGs with too
 # few runs in it are listed over the long one. Busy DAGs flood a long listing otherwise.
 BULK_WINDOWS_DAYS = (3, 14)
-_BULK_UNAVAILABLE = {404, 405}          # an Airflow without the bulk endpoints
 _FAILED_STATES = ("failed", "upstream_failed")
 
 
@@ -157,9 +156,9 @@ def _decide_bulk(client: AirflowClient, runs: dict[str, list[dict]], tests_task_
                                              tests_task_regex)
                     pending.discard(d)
             if succeeded:
-                # A successful run is decisive when one of its tasks succeeded: the same as
-                # "not all tasks skipped, removed or empty", since no other state can occur there.
-                checks = {pool.submit(client.has_successful_task, d, run["dag_run_id"]): d
+                # Decisive when some task is not skipped, removed or none: the same rule as
+                # classify_runs, asked with the non-empty task states.
+                checks = {pool.submit(client.has_nonempty_task, d, run["dag_run_id"]): d
                           for d, run in succeeded.items()}
                 for fut in as_completed(checks):
                     d = checks[fut]
@@ -205,9 +204,10 @@ def _bulk_outcomes(client: AirflowClient, dag_ids: list[str], s: Settings,
 def fetch_status_bulk(client: AirflowClient, dag_ids: list[str], s: Settings, *,
                       workers: int = 8, catalog: dict[str, dict] | None = None,
                       progress: Callable[[str], None] | None = None) -> dict[str, dict] | None:
-    """The same result as the per-DAG path, in a few calls for all DAGs. None when the bulk
-    endpoints are missing (404/405) or a bulk call fails; the caller then uses the per-DAG path.
-    DAGs the bulk listing cannot settle are read per DAG. A 401 raises."""
+    """The same result as the per-DAG path, in a few calls for all DAGs. Any error from a bulk
+    call other than a 401 (for example a 404/405 on an older Airflow) returns None, and the
+    caller then uses the per-DAG path. A 401 raises. DAGs the bulk listing cannot settle are
+    read per DAG."""
     try:
         final, pending = _bulk_outcomes(client, dag_ids, s, workers)
     except ApiError as exc:

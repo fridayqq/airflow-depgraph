@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import http.client
 import json
-from collections import Counter
 import os
 import sys
 import threading
@@ -12,6 +11,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import Counter
 from io import BytesIO
 
 from . import __version__
@@ -19,15 +19,26 @@ from . import __version__
 USER_AGENT = f"airflow-depgraph/{__version__}"
 RETRY_STATUSES = frozenset({429, 502, 503, 504})
 RETRIES = 2                 # extra attempts after the first one
-LOGIN_RETRIES = 1           # POST /auth/token is retried at most once
 BACKOFF = (1, 3)            # seconds before the first and the second retry
 MAX_RETRY_AFTER = 30
+# Every task instance state except skipped, removed and none (the empty ones): a run with any
+# other task state counts as decisive, the same rule classify_runs applies.
+NONEMPTY_TI_STATES = ("success", "failed", "upstream_failed", "running", "queued", "scheduled",
+                      "up_for_retry", "up_for_reschedule", "deferred", "restarting")
 RUNS_PATH = "/api/v2/dags/~/dagRuns/list"
 TASKS_PATH = "/api/v2/dags/~/dagRuns/~/taskInstances/list"
 BULK_PAGE = 100             # page_limit and the most ids sent in one bulk request
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _noted_redirects: set[str] = set()   # URLs already reported as redirecting, once per process
 _PROXY_VARS = ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None            # the 3xx stays an HTTPError instead of being replayed
+
+
+_NO_REDIRECT = urllib.request.build_opener(_NoRedirect)
 
 
 def _proxied() -> bool:
@@ -107,14 +118,16 @@ class AirflowClient:
         return client
 
     def _send(self, req: urllib.request.Request, path: str):
-        retries = LOGIN_RETRIES if path == "/auth/token" else RETRIES
+        # The login POST is sent once; only a connection error before any response is retried.
+        login = path == "/auth/token"
+        retries = 1 if login else RETRIES
         for attempt in range(retries + 1):
             last = attempt == retries
             try:
                 body = self._fetch(req)
                 break
             except urllib.error.HTTPError as e:
-                if last or e.code not in RETRY_STATUSES:
+                if last or login or e.code not in RETRY_STATUSES:
                     raise self._http_error(e, path) from None
                 wait = _retry_after(e.headers)
             except (OSError, http.client.HTTPException) as e:
@@ -130,6 +143,9 @@ class AirflowClient:
             ) from None
 
     def _http_error(self, e: urllib.error.HTTPError, path: str) -> ApiError:
+        if path == "/auth/token" and e.code in REDIRECT_STATUSES:
+            location = e.headers.get("Location", "") if e.headers is not None else ""
+            return ApiError(f"login redirected to {location}; use the final URL", e.code, path)
         if e.code == 403 and path == "/ui/dependencies":
             msg = ("403 on /ui/dependencies: this user cannot see DAGs "
                    "(Airflow ≥ 3.1.8 filters by DAG permissions)")
@@ -152,7 +168,9 @@ class AirflowClient:
             with self._opener(req, timeout=self.timeout) as resp:
                 return resp.read()
         if _proxied():
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            # Only GET requests may be followed; a redirected POST would be replayed as GET.
+            opener = urllib.request.urlopen if req.get_method() == "GET" else _NO_REDIRECT.open
+            with opener(req, timeout=self.timeout) as resp:
                 return resp.read()
         return self._pooled(req)
 
@@ -167,16 +185,17 @@ class AirflowClient:
                 resp = conn.getresponse()
                 body = resp.read()
             except (http.client.RemoteDisconnected, BrokenPipeError, ConnectionResetError):
-                # The server closed an idle keep-alive connection: reconnect once.
+                # The server closed an idle keep-alive connection: a GET is sent again on a new
+                # connection; anything else is not replayed here.
                 self._drop()
-                if attempt == 2:
+                if attempt == 2 or req.get_method() != "GET":
                     raise
                 continue
             except BaseException:
                 self._drop()
                 raise
-            if resp.status in REDIRECT_STATUSES:
-                # http.client does not follow redirects; this one request goes through urlopen,
+            if resp.status in REDIRECT_STATUSES and req.get_method() == "GET":
+                # http.client does not follow redirects; this one GET goes through urlopen,
                 # which does. Fixing the URL in the configuration saves the extra hop.
                 _note_redirect(req.full_url, resp.getheader("Location") or "")
                 with urllib.request.urlopen(req, timeout=self.timeout) as followed:
@@ -205,7 +224,7 @@ class AirflowClient:
     def get(self, path: str, **query) -> dict:
         full = self.url + path
         if query:
-            full += "?" + urllib.parse.urlencode(query)
+            full += "?" + urllib.parse.urlencode(query, doseq=True)
         headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
@@ -320,10 +339,11 @@ class AirflowClient:
     def tasks(self, dag_id: str) -> list[dict]:
         return self.get(f"/api/v2/dags/{self._q(dag_id)}/tasks")["tasks"]
 
-    def has_successful_task(self, dag_id: str, run_id: str) -> bool:
-        """True when one task of the run succeeded (one call, one row)."""
+    def has_nonempty_task(self, dag_id: str, run_id: str) -> bool:
+        """True when some task of the run is in a state other than skipped, removed or none
+        (one call, one row)."""
         path = f"/api/v2/dags/{self._q(dag_id)}/dagRuns/{self._q(run_id)}/taskInstances"
-        return bool(self.get(path, limit=1, state="success").get("task_instances"))
+        return bool(self.get(path, limit=1, state=list(NONEMPTY_TI_STATES)).get("task_instances"))
 
     def task_instance(self, dag_id: str, run_id: str, task_id: str) -> dict:
         return self.get(f"/api/v2/dags/{self._q(dag_id)}/dagRuns/{self._q(run_id)}"

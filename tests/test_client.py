@@ -282,11 +282,11 @@ def test_timeout_is_retried(sleeps):
     assert sleeps == [1]
 
 
-def test_login_post_is_retried_at_most_once(sleeps):
-    op = scripted_opener(_http_error(503), _http_error(503), _http_error(503))
+def test_login_503_is_not_retried(sleeps):
+    op = scripted_opener(_http_error(503), {"access_token": "abc"})
     with pytest.raises(ApiError):
         AirflowClient.login(URL, "u", "p", opener=op)
-    assert len(op.calls) == 2 and sleeps == [1]
+    assert len(op.calls) == 1 and sleeps == []
 
 
 def test_user_agent_is_sent_on_every_request(sleeps):
@@ -507,3 +507,50 @@ def test_bulk_task_instances_chunks_run_ids_and_skips_empty():
     assert seen[0][1]["state"] == ["failed", "upstream_failed"]
     seen.clear()
     assert client.bulk_task_instances(["a"], [], ["failed"]) == [] and seen == []
+
+
+def _post_count(made):
+    return sum(len(conn.targets) for conn in made)
+
+
+def test_login_connection_drop_is_retried_once(monkeypatch, sleeps):
+    for var in PROXY_VARS:
+        monkeypatch.delenv(var, raising=False)
+    made = _fake_connections(monkeypatch, [http.client.RemoteDisconnected("gone"),
+                                           _FakeHTTPResponse(200, b'{"access_token": "abc"}')])
+    assert AirflowClient.login(URL, "u", "p").token == "abc"
+    assert _post_count(made) == 2
+
+
+def test_login_connection_dropped_twice_gives_up_after_two_posts(monkeypatch, sleeps):
+    for var in PROXY_VARS:
+        monkeypatch.delenv(var, raising=False)
+    made = _fake_connections(monkeypatch, [http.client.RemoteDisconnected("gone"),
+                                           http.client.RemoteDisconnected("gone")])
+    with pytest.raises(ApiError, match="network error"):
+        AirflowClient.login(URL, "u", "p")
+    assert _post_count(made) == 2
+
+
+def test_login_redirect_is_reported_not_replayed(monkeypatch, sleeps):
+    for var in PROXY_VARS:
+        monkeypatch.delenv(var, raising=False)
+    made = _fake_connections(monkeypatch, [_FakeHTTPResponse(
+        302, headers={"Location": "https://sso.example.com/login"})])
+    replayed = []
+    monkeypatch.setattr(client_mod.urllib.request, "urlopen", lambda *a, **k: replayed.append(a))
+    with pytest.raises(ApiError, match=r"login redirected to https://sso.example.com/login; "
+                                       r"use the final URL"):
+        AirflowClient.login(URL, "u", "p")
+    assert _post_count(made) == 1 and replayed == []
+
+
+def test_has_nonempty_task_asks_for_every_nonempty_state():
+    seen = []
+
+    def opener(req, timeout=None):
+        seen.append(urllib.parse.parse_qs(urllib.parse.urlsplit(req.full_url).query))
+        return _Resp(json.dumps({"task_instances": [{"task_id": "a"}]}).encode())
+
+    assert AirflowClient(URL, "t", opener=opener).has_nonempty_task("d", "r") is True
+    assert seen[0]["limit"] == ["1"] and seen[0]["state"] == list(client_mod.NONEMPTY_TI_STATES)

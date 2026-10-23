@@ -2,7 +2,7 @@ from collections import Counter
 
 import pytest
 
-from airflow_depgraph.client import ApiError
+from airflow_depgraph.client import NONEMPTY_TI_STATES, ApiError
 from airflow_depgraph.presets import Settings
 from airflow_depgraph.status import classify_runs, fetch_status
 
@@ -186,9 +186,10 @@ class BulkFake:
         self.calls["task_instances"] += 1
         return self.tis.get((dag_id, run_id), [])
 
-    def has_successful_task(self, dag_id, run_id):
-        self.calls["has_success"] += 1
-        return any(ti["state"] == "success" for ti in self.tis.get((dag_id, run_id), []))
+    def has_nonempty_task(self, dag_id, run_id):
+        # Answers from the same instance list the per-DAG path reads.
+        self.calls["has_nonempty"] += 1
+        return any(ti["state"] in NONEMPTY_TI_STATES for ti in self.tis.get((dag_id, run_id), []))
 
     def bulk_dag_runs(self, dag_ids, since_iso, per_dag=None):
         if self.bulk_status:
@@ -293,7 +294,7 @@ def test_bulk_uses_few_calls_for_fifty_dags():
     out = fetch_status(fake, ids, Settings(), with_tasks=False, catalog=_catalog(ids))
     assert all(out[d]["last_run"]["state"] == "success" for d in ids)
     assert fake.calls["bulk_runs"] == 1 and fake.calls["bulk_tis"] == 0
-    assert fake.calls["has_success"] == 50          # one parallel check per DAG
+    assert fake.calls["has_nonempty"] == 50         # one parallel check per DAG
     assert fake.calls["dag_runs"] == 0 and fake.calls["task_instances"] == 0
 
 
@@ -302,11 +303,11 @@ def test_success_checks_run_in_parallel():
     seen = set()
 
     class Parallel(BulkFake):
-        def has_successful_task(self, dag_id, run_id):
+        def has_nonempty_task(self, dag_id, run_id):
             seen.add(threading.get_ident())
             import time
             time.sleep(0.02)
-            return super().has_successful_task(dag_id, run_id)
+            return super().has_nonempty_task(dag_id, run_id)
 
     ids = [f"d{i}" for i in range(12)]
     runs = {d: [_run(d, f"r{d}", "success")] for d in ids}
@@ -342,3 +343,43 @@ def test_bulk_status_off_reads_per_dag():
     fake = BulkFake(runs, tis)
     fetch_status(fake, ids, Settings(bulk_status=False), with_tasks=False, catalog=_catalog(ids))
     assert fake.calls["bulk_runs"] == 0 and fake.calls["dag_runs"] == len(ids)
+
+
+def _compare_bulk_with_per_dag(runs, tis, lookback):
+    """Bulk and per-DAG answers on the same fake data; the bulk path must have been used."""
+    from airflow_depgraph import status
+    s = Settings(status_runs_lookback=lookback)
+    ids = list(runs)
+    cat = _catalog(ids)
+    fake = BulkFake(runs, tis)
+    per = {d: status._one(fake, d, s, False, cat) for d in ids}
+    fake.calls.clear()
+    bulk = fetch_status(fake, ids, s, with_tasks=False, catalog=cat)
+    assert bulk == per
+    assert fake.calls["bulk_runs"] >= 1
+    return bulk
+
+
+def test_mark_success_with_only_a_failed_task_is_decisive_as_per_dag():
+    runs = {"d_mark": [_run("d_mark", "m1", "success")]}
+    tis = {("d_mark", "m1"): [{"task_id": "load", "state": "failed"},
+                              {"task_id": "x", "state": "skipped"}]}
+    bulk = _compare_bulk_with_per_dag(runs, tis, lookback=1)
+    assert bulk["d_mark"]["last_run"]["run_id"] == "m1"
+
+
+def test_running_then_success_matches_per_dag():
+    runs = {"d_rs": [_run("d_rs", "r2", "running"), _run("d_rs", "r1", "success")]}
+    tis = {("d_rs", "r2"): [{"task_id": "a", "state": "running"}],
+           ("d_rs", "r1"): [{"task_id": "a", "state": "running"},
+                            {"task_id": "b", "state": "skipped"}]}
+    bulk = _compare_bulk_with_per_dag(runs, tis, lookback=2)
+    assert bulk["d_rs"]["last_run"]["run_id"] == "r1"
+
+
+def test_success_run_with_only_skipped_tasks_stays_undecided_as_per_dag():
+    runs = {"d_skip": [_run("d_skip", "k2", "success"), _run("d_skip", "k1", "success")]}
+    tis = {("d_skip", "k2"): [{"task_id": "a", "state": "skipped"}],
+           ("d_skip", "k1"): [{"task_id": "a", "state": "removed"}, {"task_id": "b", "state": None}]}
+    bulk = _compare_bulk_with_per_dag(runs, tis, lookback=2)
+    assert bulk["d_skip"]["last_run"] is None
