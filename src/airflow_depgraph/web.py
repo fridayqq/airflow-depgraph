@@ -397,7 +397,7 @@ class PageBuilder:
         if self.inference is not None:
             cached = self.inference.current()
             if cached is None:
-                note = "sensor links: first refresh running"
+                note = "inferred links: first refresh running"
             else:
                 # What this viewer may see: their own /ui/dependencies DAGs plus their catalog.
                 visible = {n["id"][4:] for n in nodes if n["type"] == "dag"} | set(snap.catalog or {})

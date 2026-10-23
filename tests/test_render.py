@@ -81,7 +81,7 @@ def test_render_has_no_placeholders_and_inlines_d3(small_snapshot):
     assert "https://d3js.org v7.9.0" in html
     assert "<script src=" not in html and "<link" not in html
     assert "Reports" in html
-    assert "14 DAGs · 6 assets · 1 trigger · 2 sensors · 22 edges · failing now: 2 · snapshot 2026-10-22T06:00:00Z" in html
+    assert "14 DAGs · 6 assets · 1 trigger · 22 edges · failing at snapshot: 2 · sensors: 2 (Airflow) · snapshot 2026-10-22 06:00 UTC" in html
 
 
 def test_render_embeds_meta(small_snapshot):
@@ -193,10 +193,10 @@ def test_view_inferred_nodes_flags_and_stats(inferred_snapshot):
 
 
 def test_render_header_counts_sensor_links(inferred_snapshot, small_snapshot):
-    assert "sensor links: 2" in render(inferred_snapshot, Settings())
-    assert "sensor links: 2, updated 10:30 UTC" in render(inferred_snapshot, Settings(),
-                                                          inferred_updated="10:30 UTC")
-    assert "sensor links:" not in render(small_snapshot, Settings())
+    assert "inferred links: 2" in render(inferred_snapshot, Settings())
+    assert "inferred links: 2, updated 10:30 UTC" in render(inferred_snapshot, Settings(),
+                                                            inferred_updated="10:30 UTC")
+    assert "inferred links:" not in render(small_snapshot, Settings())
 
 
 def test_view_drops_inferred_sensors_of_stale_dags(inferred_snapshot):
@@ -226,3 +226,13 @@ def test_view_counts_status_errors_in_header(small_snapshot):
     clean = build_view(small_snapshot, Settings())["stats"]
     assert clean["status_errors"] == 0
     assert "status unavailable" not in _stats_line(clean)
+
+
+def test_stats_plural_and_snapshot_time(small_snapshot):
+    from airflow_depgraph.render import _stats_line, build_view
+    st = build_view(small_snapshot, Settings())["stats"]
+    line = _stats_line(dict(st, dags=1, triggers=1, sensors=0, edges=2))
+    assert line.startswith("1 DAG · ") and "1 trigger" in line and "2 edges" in line
+    assert "sensors: 0 (Airflow)" in line
+    assert "failing at snapshot:" in line and "failing now" not in line
+    assert "snapshot time unknown" in _stats_line(dict(st, snapshot=None))

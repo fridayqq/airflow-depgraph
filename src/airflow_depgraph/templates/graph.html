@@ -38,6 +38,8 @@ input[type=search] {
   background: var(--bg); color: var(--fg); flex: 1 1 260px; max-width: 420px; min-width: 0;
 }
 label.t { display: inline-flex; align-items: center; gap: 4px; color: var(--mut); cursor: pointer; }
+.filters { display: contents; }  /* on desktop the toggles and legend sit in the header row */
+#filtersBtn { display: none; font: inherit; padding: 2px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--acc); cursor: pointer; }
 main { flex: 1; display: grid; grid-template-columns: 1fr 320px; min-height: 0; }
 svg { width: 100%; height: 100%; display: block; cursor: grab; }
 svg:active { cursor: grabbing; }
@@ -65,10 +67,11 @@ aside a { color: var(--acc); }
   width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent;
   border-bottom: 11px solid var(--c-trigger); border-radius: 0;
 }
-.legend i.dia.inf { background: none; border: 1.5px dashed var(--c-sensor); }
-.legend i.dia.grd { background: none; border: 1.5px dashed var(--guard); }
+.legend i.dia.inf { background: none; border: 2px dashed var(--c-sensor); }
+.legend i.dia.grd { background: none; border: 2px dashed var(--mut); }
 .legend i.ring { background: none; border: 2.5px solid var(--critical); }
 .legend i.ring.warn { border-color: var(--warning); }
+.legend i.ring.hl { border-color: var(--fg); }
 #tip {
   position: fixed; pointer-events: none; background: var(--panel); border: 1px solid var(--line);
   border-radius: 6px; padding: 6px 9px; font-size: 12px; box-shadow: 0 2px 10px var(--shadow);
@@ -86,24 +89,32 @@ text.lbl {
   main { display: block; }
   svg { height: 60vh; }
   aside { border-left: 0; border-top: 1px solid var(--line); }
+  header { padding: 8px 12px; gap: 6px 10px; }
+  header h1 { font-size: 15px; }
+  header .st { font-size: 12px; }
+  #filtersBtn { display: inline-block; }
+  header .filters { display: none; }
+  body.filters-open header .filters { display: contents; }
 }
 </style>
 </head>
 <body>
 <header>
   <h1>__TITLE__</h1>
-  <span class="st">__STATS__</span>
+  <span class="st" id="stats">__STATS__</span>
   <span class="st" id="shown"></span>
   <span class="st" id="ver" hidden></span>
   <input id="q" type="search" placeholder="find a DAG or asset… (+dag, dag+, 2+dag+3)" autocomplete="off" aria-label="Search">
   <button type="button" id="fit" title="Zoom to fit all shown nodes">Fit</button>
+  <button type="button" id="filtersBtn" aria-controls="filters">Filters</button>
+  <div class="filters" id="filters">
   <label class="t"><input type="checkbox" id="hideAssets"> DAG→DAG (hide assets)</label>
   <label class="t"><input type="checkbox" id="onlyFail"> only failing + their chain</label>
   <label class="t"><input type="checkbox" id="blast"> blast radius</label>
   <label class="t"><input type="checkbox" id="onlyLinked" checked> only linked DAGs</label>
   <label class="t"><input type="checkbox" id="onlyActive" checked> only active DAGs</label>
   <label class="t" id="tagWrap"><input type="checkbox" id="onlyTags" checked> <span id="tagLbl">only tags</span></label>
-  <label class="t" id="connWrap"><input type="checkbox" id="conn"> + connected DAGs</label>
+  <label class="t" id="connWrap"><input type="checkbox" id="conn"> + linked DAGs of other teams</label>
   <label class="t" id="guardWrap"><input type="checkbox" id="showGuards"> show deploy guards</label>
   <label class="t" id="hlWrap"><input type="checkbox" id="hl"> __HL_LABEL__</label>
   <span class="legend">
@@ -115,7 +126,9 @@ text.lbl {
     <span id="lgGuard"><i class="dia grd"></i>deploy guard</span>
     <span><i class="ring"></i>failed (pipeline)</span>
     <span><i class="ring warn"></i>failed (tests only)</span>
+    <span id="lgHl"><i class="ring hl"></i>__HL_LABEL__</span>
   </span>
+  </div>
 </header>
 <main>
   <svg id="g" role="img" aria-label="Dependency graph"></svg>
@@ -127,6 +140,7 @@ text.lbl {
 <script>
 const DATA = __DATA__;
 const META = DATA.meta || {};
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
 const css = k => getComputedStyle(document.documentElement).getPropertyValue(k).trim();
 const COLOR = type => css({dag: '--c-dag', asset: '--c-asset', trigger: '--c-trigger', sensor: '--c-sensor'}[type] || '--c-dag');
@@ -275,7 +289,7 @@ function buildView() {
 // "shown N of M DAGs": the DAG nodes drawn now.
 function updateShown() {
   const total = DATA.nodes.filter(n => n.type === 'dag').length, shown = nodes.filter(n => n.type === 'dag').length;
-  box('shown').textContent = `shown ${shown} of ${total} DAGs`;
+  box('shown').textContent = `shown ${shown} of ${plural(total, 'DAG', 'DAGs')}`;
 }
 
 function draw() {
@@ -358,7 +372,7 @@ function facts(d) {
   if (d.paused) f += ' <span class="badge">paused</span>';
   (d.tags || []).forEach(t => { f += ` <span class="badge">#${esc(t)}</span>`; });
   if (d.fail) f += ` <span class="badge ${d.fail.kind === 'tests' ? 'warn' : 'crit'}">${d.fail.kind === 'tests' ? 'tests failed' : 'pipeline failed'}${d.fail.paused ? ' · paused' : ''}</span> ${esc(d.fail.date || '')}`;
-  return f + `<br>↓ ${d.down} DAGs depend on it · ↑ waits for ${d.up} DAGs · edges: ${d.indeg} in / ${d.outdeg} out`;
+  return f + `<br>↓ ${plural(d.down, 'DAG', 'DAGs')} ${d.down === 1 ? 'depends' : 'depend'} on it · ↑ waits for ${plural(d.up, 'DAG', 'DAGs')}`;
 }
 
 // DAGs reached from startId along adj, one hop per DAG step (links in between are free), each with the link it came through.
@@ -614,7 +628,22 @@ if (window.matchMedia) {
   (mq.addEventListener ? mq.addEventListener.bind(mq, 'change') : mq.addListener.bind(mq))(() => { if (sim) draw(); });
 }
 
+// Snapshot time with its age, e.g. "snapshot 2026-10-22 06:00 UTC (3 h ago)".
+function ago(at) {
+  const min = Math.floor((Date.now() - at) / 60000);
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min} min ago`;
+  const h = Math.floor(min / 60);
+  return h < 48 ? `${h} h ago` : plural(Math.floor(h / 24), 'day', 'days') + ' ago';
+}
+const SNAP_AT = Date.parse(META.snapshot || '');
+if (!isNaN(SNAP_AT)) {
+  const when = new Date(SNAP_AT).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+  box('stats').textContent = box('stats').textContent.replace(/snapshot [^·]*/, `snapshot ${when} (${ago(SNAP_AT)})`);
+}
+box('filtersBtn').addEventListener('click', () => document.body.classList.toggle('filters-open'));
 if (!DATA.nodes.some(n => n.hl)) box('hlWrap').hidden = true;
+box('lgHl').hidden = !DATA.nodes.some(n => n.hl);
 if (!DATA.nodes.some(n => n.kind === 'guard')) { box('guardWrap').hidden = true; box('lgGuard').hidden = true; }
 if (!DATA.nodes.some(n => n.inferred && n.kind !== 'guard')) box('lgInf').hidden = true;
 if (TAGS.length) box('tagLbl').textContent = 'only tags: ' + TAGS.join(', ');

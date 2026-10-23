@@ -125,9 +125,16 @@ def _plural(n: int, one: str, many: str) -> str:
     return f"{n} {one if n == 1 else many}"
 
 
+def _snapshot_text(fetched_at: str | None) -> str:
+    """'snapshot 2026-10-22 06:00 UTC'; the page adds the age to it."""
+    if not fetched_at:
+        return "snapshot time unknown"
+    return "snapshot " + fetched_at.replace("T", " ")[:16] + " UTC"
+
+
 def _stats_line(st: dict, inferred_note: str | None = None, inferred_updated: str | None = None) -> str:
     if inferred_note is None and st.get("inferred") is not None:
-        inferred_note = f"sensor links: {st['inferred']}"
+        inferred_note = f"inferred links: {st['inferred']}"
         if inferred_updated:
             inferred_note += f", updated {inferred_updated}"
     status_note = []
@@ -138,11 +145,10 @@ def _stats_line(st: dict, inferred_note: str | None = None, inferred_updated: st
             _plural(st["dags"], "DAG", "DAGs"),
             _plural(st["assets"], "asset", "assets"),
             _plural(st["triggers"], "trigger", "triggers"),
-            _plural(st["sensors"], "sensor", "sensors"),
             _plural(st["edges"], "edge", "edges"),
-            f"failing now: {st['failing']}",
-            f"snapshot {st['snapshot']}",
-        ] + ([inferred_note] if inferred_note else []) + status_note
+            f"failing at snapshot: {st['failing']}",
+            f"sensors: {st['sensors']} (Airflow)",
+        ] + ([inferred_note] if inferred_note else []) + [_snapshot_text(st["snapshot"])] + status_note
     )
 
 
@@ -156,7 +162,7 @@ def render(snap: Snapshot, s: Settings, status_override: dict | None = None, *,
     """Header gets "sensor links: N[, updated <inferred_updated>]"; inferred_note replaces it."""
     view = build_view(snap, s, status_override)
     meta = {"source": snap.source, "airflow_version": snap.airflow_version, "tags": list(s.tags),
-            "catalog": snap.catalog is not None}
+            "catalog": snap.catalog is not None, "snapshot": snap.fetched_at or None}
     data = {**view, "meta": meta}
     values = {
         "TITLE": html.escape(s.title),

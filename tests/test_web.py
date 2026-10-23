@@ -384,18 +384,18 @@ def test_page_merges_inferred_links_visible_to_viewer():
     assert '"id": "sensor-inferred:b:wait_a"' in html and '"inferred": "rendered"' in html
     assert '"kind": "guard"' in html                       # guard drawn (toggle on the page)
     assert "secret" not in html                            # viewer's catalog has no "secret"
-    assert "sensor links: 1, updated 00:00 UTC" in html
+    assert "inferred links: 1, updated 00:00 UTC" in html
 
 
 def test_page_before_first_inference_says_so():
     b = PageBuilder("u", Settings(infer_sensors=True), client_factory=FakeClient)
     b.inference = _Stub(None)
-    assert "sensor links: first refresh running" in b.page("tok", None, False)
+    assert "inferred links: first refresh running" in b.page("tok", None, False)
 
 
 def test_page_without_infer_setting_has_no_inference():
     b = PageBuilder("u", Settings(), client_factory=FakeClient)
-    assert b.inference is None and "sensor links:" not in b.page("tok", None, False)
+    assert b.inference is None and "inferred links:" not in b.page("tok", None, False)
 
 
 def test_rejected_token_is_never_offered():
