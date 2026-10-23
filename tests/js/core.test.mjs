@@ -121,3 +121,44 @@ test('plural', () => {
   assert.equal(core.plural(0, 'DAG', 'DAGs'), '0 DAGs');
   assert.equal(core.plural(2, 'DAG', 'DAGs'), '2 DAGs');
 });
+
+// Guard edges: dag:b -> dag:a is a deploy guard; dag:a -> dag:b is a normal edge.
+test('buildAdj leaves guard edges out by default and keeps them with {guards: true}', () => {
+  const edges = [{s: 'dag:a', t: 'dag:b', guard: false}, {s: 'dag:b', t: 'dag:a', guard: true}];
+  const byNode = new Map([['dag:a', {}], ['dag:b', {}]]);
+  const off = core.buildAdj(edges, byNode, {guards: false});
+  assert.deepEqual(off.out.get('dag:a'), ['dag:b']);
+  assert.equal(off.out.has('dag:b'), false);
+  assert.equal(off.inn.has('dag:a'), false);
+  const on = core.buildAdj(edges, byNode, {guards: true});
+  assert.deepEqual(on.out.get('dag:b'), ['dag:a']);
+  assert.deepEqual(on.inn.get('dag:a'), ['dag:b']);
+});
+
+function viewOf(nodes, edges, tags = []) {
+  return {nodes, edges, byId: new Map(nodes.map(n => [n.id, n])), tags};
+}
+const base = {onlyTags: false, onlyActive: false, conn: false, showGuards: false, blast: false, onlyFail: false};
+
+test('filterView: guard link node and its edges appear only with showGuards', () => {
+  const view = viewOf(
+    [{id: 'dag:a', type: 'dag'}, {id: 'dag:b', type: 'dag'}, {id: 'sensor:g', type: 'sensor', kind: 'guard'}],
+    [{s: 'dag:a', t: 'sensor:g', guard: true}, {s: 'sensor:g', t: 'dag:b', guard: true}]);
+  const off = core.filterView(view, {...base, showGuards: false});
+  assert.deepEqual([...off.keep].sort(), ['dag:a', 'dag:b']);
+  assert.deepEqual(off.edges, []);
+  const on = core.filterView(view, {...base, showGuards: true});
+  assert.deepEqual([...on.keep].sort(), ['dag:a', 'dag:b', 'sensor:g']);
+  assert.equal(on.edges.length, 2);
+});
+
+test('filterView: only failing keeps the failing DAG, its chain, and drops unrelated DAGs', () => {
+  const view = viewOf(
+    [{id: 'dag:u', type: 'dag'}, {id: 'asset:y', type: 'asset'}, {id: 'dag:f', type: 'dag', fail: {kind: 'pipeline', paused: false}},
+     {id: 'asset:x', type: 'asset'}, {id: 'dag:d', type: 'dag'}, {id: 'dag:z', type: 'dag'}],
+    [{s: 'dag:u', t: 'asset:y', guard: false}, {s: 'asset:y', t: 'dag:f', guard: false},
+     {s: 'dag:f', t: 'asset:x', guard: false}, {s: 'asset:x', t: 'dag:d', guard: false}]);
+  const out = core.filterView(view, {...base, onlyFail: true});
+  assert.deepEqual([...out.keep].sort(), ['asset:x', 'asset:y', 'dag:d', 'dag:f', 'dag:u']);
+  assert.equal(out.edges.length, 4);
+});
