@@ -1,3 +1,7 @@
+import hashlib
+import threading
+import time
+
 import pytest
 
 from airflow_depgraph.client import ApiError
@@ -14,8 +18,9 @@ PAYLOAD = {"nodes": [{"id": "dag:a", "label": "a", "type": "dag"},
 class FakeClient:
     made = []
 
-    def __init__(self, url, token=None):
-        self.url, self.token = url, token
+    def __init__(self, url, token=None, timeout=None, delay=0):
+        time.sleep(delay)
+        self.url, self.token, self.timeout = url, token, timeout
         FakeClient.made.append(self)
 
     def dependencies(self, node_id=None):
@@ -84,6 +89,32 @@ def test_page_propagates_auth_errors_and_caches_nothing():
     with pytest.raises(ApiError):
         b.page("bad", None, False)
     assert len(FakeClient.made) == 2
+
+
+def test_cache_drops_expired_entries_on_insert_and_respects_cap():
+    t = [0.0]
+    b = PageBuilder("u", Settings(), client_factory=FakeClient, clock=lambda: t[0],
+                    cache_seconds=10, max_entries=2)
+    b.page("a", None, False)
+    t[0] = 5
+    b.page("b", None, False)
+    t[0] = 12                       # "a" is expired, "b" is not
+    b.page("c", None, False)
+    assert len(b._cache) == 2
+    assert not any(k[0] == hashlib.sha256(b"a").hexdigest() for k in b._cache)
+    b.page("d", None, False)        # cap: oldest ("b") goes
+    assert len(b._cache) == 2
+    assert hashlib.sha256(b"b").hexdigest() not in {k[0] for k in b._cache}
+
+
+def test_concurrent_same_token_builds_once_with_short_timeout():
+    b = PageBuilder("u", Settings(),
+                    client_factory=lambda *a, **kw: FakeClient(*a, delay=0.2, **kw))
+    threads = [threading.Thread(target=b.page, args=("tok", None, False)) for _ in range(2)]
+    [th.start() for th in threads]
+    [th.join() for th in threads]
+    assert len(FakeClient.made) == 1
+    assert FakeClient.made[0].timeout == 10
 
 
 def _jwt(payload: dict) -> str:

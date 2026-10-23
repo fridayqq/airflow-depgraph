@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import cached_property
@@ -19,7 +20,19 @@ class SnapshotError(ValueError):
     pass
 
 
-def validate_payload(raw: dict) -> tuple[list[dict], list[dict]]:
+def _before_3_1_8(version: str | None) -> bool:
+    m = re.match(r"\s*(\d+)\.(\d+)\.(\d+)", version or "")
+    return bool(m) and tuple(int(g) for g in m.groups()) < (3, 1, 8)
+
+
+def _is_trigger_target(other: object, dag_node: str, by_id: dict) -> bool:
+    node = by_id.get(other)
+    parts = other.split(":", 3) if isinstance(other, str) else []
+    return bool(node and node.get("type") == "trigger" and len(parts) == 4
+                and parts[0] == "trigger" and parts[2] == dag_node[4:])
+
+
+def validate_payload(raw: dict, airflow_version: str | None = None) -> tuple[list[dict], list[dict]]:
     prefix = "unexpected /ui/dependencies payload"
     nodes = raw.get("nodes") if isinstance(raw, dict) else None
     edges = raw.get("edges") if isinstance(raw, dict) else None
@@ -35,15 +48,19 @@ def validate_payload(raw: dict) -> tuple[list[dict], list[dict]]:
         if not isinstance(edge, dict) or any(k not in edge for k in _EDGE_KEYS):
             raise SnapshotError(f"{prefix}: edge without source_id/target_id: {edge!r}")
 
-    # Airflow 3.1 can list an edge to a DAG it omits from nodes (e.g. a trigger target):
-    # add those DAG nodes. Other dangling edges (permission-filtered) are dropped.
+    # Airflow < 3.1.8 lists a trigger edge to a DAG it omits from nodes: add that DAG node.
+    # Every other dangling edge (e.g. permission-filtered) is dropped.
     nodes = list(nodes)
     node_ids = {n["id"] for n in nodes}
-    for edge in edges:
-        for end in (edge["source_id"], edge["target_id"]):
-            if isinstance(end, str) and end.startswith("dag:") and end not in node_ids:
-                nodes.append({"id": end, "label": end[4:], "type": "dag"})
-                node_ids.add(end)
+    if _before_3_1_8(airflow_version):
+        by_id = {n["id"]: n for n in nodes}
+        for edge in edges:
+            for end, other in ((edge["source_id"], edge["target_id"]),
+                               (edge["target_id"], edge["source_id"])):
+                if (isinstance(end, str) and end.startswith("dag:") and end not in node_ids
+                        and _is_trigger_target(other, end, by_id)):
+                    nodes.append({"id": end, "label": end[4:], "type": "dag"})
+                    node_ids.add(end)
     kept = [e for e in edges if e["source_id"] in node_ids and e["target_id"] in node_ids]
     return nodes, kept
 

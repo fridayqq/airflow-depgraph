@@ -54,7 +54,7 @@ def _live_snapshot(client: AirflowClient, s: Settings, node_id: str | None) -> S
     raw = client.dependencies(node_id)
     version = client.version()
     try:
-        nodes, edges = snapmod.validate_payload(raw)
+        nodes, edges = snapmod.validate_payload(raw, version)
     except SnapshotError as exc:
         raise SnapshotError(f"{exc} (Airflow {version or 'version unknown'})") from None
     return snapmod.new(nodes, edges, s.url, version)

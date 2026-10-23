@@ -35,13 +35,18 @@ The same package is also an Airflow 3 plugin. Installed into the Airflow image, 
 Tested on Airflow 3.1.5 and 3.3.2, at the root and under a sub-path such as `/airflow/`.
 
 - **Data.** The page calls the api-server's own `/ui/dependencies` and REST API with the
-  user's session token, so every user sees exactly the DAGs they may read. Nothing else is
-  stored or configured.
+  user's session token. DAG-level permission filtering of the graph is done by Airflow itself
+  from 3.1.8 on; earlier 3.1.x returns every DAG to any user who may read dependencies.
+  Nothing else is stored.
+- **Loopback URL.** The plugin reaches its own api-server at
+  `http://127.0.0.1:<[api] port><base path>`. Set `AIRFLOW_DEPGRAPH_LOOPBACK_URL` when the
+  api-server uses TLS, another port flag, or a non-loopback bind.
 - **Sign-in.** Without a session (or with an expired one) the page redirects to the Airflow
   login and comes back afterwards.
 - **Status rings.** Off by default because they cost one REST call per DAG. Open the page
-  with `?status=1`, or set `AIRFLOW_DEPGRAPH_WITH_STATUS=true`. Results are cached per user for
-  five minutes.
+  with `?status=1`, or set `AIRFLOW_DEPGRAPH_WITH_STATUS=true`. The rendered page is kept in
+  memory per session token for five minutes (at most 64 pages); permission changes show up
+  after that.
 - **Settings.** The same `AIRFLOW_DEPGRAPH_*` variables as the CLI (`..._HIGHLIGHT`,
   `..._ASSET_LABEL_STRIP_PREFIX`, `..._TITLE`, `..._TESTS_TASK_REGEX`), or a preset named in
   `AIRFLOW_DEPGRAPH_PRESET`, set on the api-server.
@@ -66,8 +71,8 @@ api-server needs it; installing it everywhere is harmless. The plugin is found t
 
 **Check.** `airflow plugins` lists `airflow_depgraph`, and the menu shows the new item.
 
-**Behind a reverse proxy.** Set `[api] base_url` (`AIRFLOW__API__BASE_URL`) to the public URL,
-including the sub-path. The menu link and the "Open in Airflow" links are built from it.
+**Behind a reverse proxy.** Set `[api] base_url` (`AIRFLOW__API__BASE_URL`) to the absolute public URL,
+including the sub-path, e.g. `https://host.example.com/airflow`. The menu link and the "Open in Airflow" links are built from it.
 
 ## Claude Code skill
 

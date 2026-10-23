@@ -73,7 +73,28 @@ def test_validate_adds_dag_nodes_airflow_omits():
            "edges": [{"source_id": "dag:a", "target_id": "trigger:a:b:t"},
                      {"source_id": "trigger:a:b:t", "target_id": "dag:b"},
                      {"source_id": "dag:a", "target_id": "asset:99"}]}
-    nodes, edges = validate_payload(raw)
+    nodes, edges = validate_payload(raw, airflow_version="3.1.5")
     assert {"id": "dag:b", "label": "b", "type": "dag"} in nodes
     assert {"source_id": "trigger:a:b:t", "target_id": "dag:b"} in edges
     assert all(e["target_id"] != "asset:99" for e in edges)
+
+
+_TRIGGER_RAW = {"nodes": [{"id": "dag:a", "label": "a", "type": "dag"},
+                          {"id": "trigger:a:b:t", "label": "t", "type": "trigger"}],
+                "edges": [{"source_id": "dag:a", "target_id": "trigger:a:b:t"},
+                          {"source_id": "trigger:a:b:t", "target_id": "dag:b"}]}
+
+
+@pytest.mark.parametrize("version,synthesized", [
+    ("3.1.5", True), ("3.1.7+astro.1", True), ("3.1.8", False), ("3.3.2", False), (None, False)])
+def test_validate_synthesizes_trigger_target_only_on_old_airflow(version, synthesized):
+    nodes, edges = validate_payload(_TRIGGER_RAW, airflow_version=version)
+    assert any(n["id"] == "dag:b" for n in nodes) is synthesized
+    assert any(e["target_id"] == "dag:b" for e in edges) is synthesized
+
+
+def test_validate_does_not_synthesize_dag_from_asset_edge():
+    raw = {"nodes": [{"id": "asset:1", "label": "x", "type": "asset"}],
+           "edges": [{"source_id": "asset:1", "target_id": "dag:hidden"}]}
+    nodes, edges = validate_payload(raw, airflow_version="3.1.5")
+    assert [n["id"] for n in nodes] == ["asset:1"] and edges == []
