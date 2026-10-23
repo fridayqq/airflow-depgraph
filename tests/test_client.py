@@ -7,6 +7,7 @@ from airflow_depgraph.client import AirflowClient, ApiError
 import http.client
 import http.server
 import threading
+import urllib.parse
 
 from airflow_depgraph import __version__
 from airflow_depgraph import client as client_mod
@@ -432,3 +433,77 @@ def test_dropped_keepalive_connection_is_reopened_once(monkeypatch):
     assert AirflowClient(URL, "t").dependencies() == {"nodes": []}
     assert len(made) == 2 and made[0].closed
     assert made[1].targets == ["/ui/dependencies"]
+
+
+def _body_opener(answer, seen):
+    """Opener that records each JSON body and returns answer(path, body)."""
+    def opener(req, timeout=None):
+        body = json.loads(req.data)
+        seen.append((urllib.parse.urlsplit(req.full_url).path, body))
+        return _Resp(json.dumps(answer(urllib.parse.urlsplit(req.full_url).path, body)).encode())
+    return opener
+
+
+def test_post_sends_json_and_maps_errors():
+    seen = []
+    op = _body_opener(lambda path, body: {"ok": body["x"]}, seen)
+    assert AirflowClient(URL, "t", opener=op).post("/p", {"x": 1}) == {"ok": 1}
+    assert seen == [("/p", {"x": 1})]
+    with pytest.raises(ApiError) as ei:
+        AirflowClient(URL, "t", opener=fake_opener({"/p": 404})).post("/p", {})
+    assert ei.value.status == 404
+
+
+def test_bulk_dag_runs_chunks_dag_ids_and_stops_at_total():
+    seen = []
+
+    def answer(path, body):
+        assert path == "/api/v2/dags/~/dagRuns/list"
+        return {"dag_runs": [{"dag_id": d, "dag_run_id": f"r-{d}"} for d in body["dag_ids"]],
+                "total_entries": len(body["dag_ids"])}
+
+    ids = [f"d{i}" for i in range(150)]
+    runs = AirflowClient(URL, "t", opener=_body_opener(answer, seen)).bulk_dag_runs(
+        ids, "2026-01-01T00:00:00+00:00")
+    assert len(runs) == 150
+    assert [len(body["dag_ids"]) for _, body in seen] == [100, 50]
+    assert seen[0][1]["order_by"] == "-run_after" and seen[0][1]["page_offset"] == 0
+    assert seen[0][1]["run_after_gte"] == "2026-01-01T00:00:00+00:00"
+
+
+def test_bulk_dag_runs_pages_until_total_entries():
+    pages = {0: {"dag_runs": [{"dag_id": "a", "dag_run_id": "r1"}, {"dag_id": "a", "dag_run_id": "r2"}],
+                 "total_entries": 3},
+             2: {"dag_runs": [{"dag_id": "a", "dag_run_id": "r3"}], "total_entries": 3}}
+    seen = []
+    runs = AirflowClient(URL, "t", opener=_body_opener(
+        lambda path, body: pages[body["page_offset"]], seen)).bulk_dag_runs(["a"], "x")
+    assert [r["dag_run_id"] for r in runs] == ["r1", "r2", "r3"]
+    assert [body["page_offset"] for _, body in seen] == [0, 2]
+
+
+def test_bulk_dag_runs_stops_once_every_dag_has_enough_runs():
+    seen = []
+    page = {"dag_runs": [{"dag_id": "a", "dag_run_id": "r1"}, {"dag_id": "a", "dag_run_id": "r2"}],
+            "total_entries": 50}
+    runs = AirflowClient(URL, "t", opener=_body_opener(lambda p, b: page, seen)).bulk_dag_runs(
+        ["a"], "x", per_dag=1)
+    assert len(seen) == 1 and len(runs) == 2
+
+
+def test_bulk_task_instances_chunks_run_ids_and_skips_empty():
+    seen = []
+
+    def answer(path, body):
+        assert path == "/api/v2/dags/~/dagRuns/~/taskInstances/list"
+        return {"task_instances": [{"dag_id": "a", "dag_run_id": r, "task_id": "t"}
+                                   for r in body["dag_run_ids"]],
+                "total_entries": len(body["dag_run_ids"])}
+
+    client = AirflowClient(URL, "t", opener=_body_opener(answer, seen))
+    tis = client.bulk_task_instances(["a"], [f"r{i}" for i in range(120)], ["failed", "upstream_failed"])
+    assert len(tis) == 120
+    assert [len(body["dag_run_ids"]) for _, body in seen] == [100, 20]
+    assert seen[0][1]["state"] == ["failed", "upstream_failed"]
+    seen.clear()
+    assert client.bulk_task_instances(["a"], [], ["failed"]) == [] and seen == []

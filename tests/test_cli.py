@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from airflow_depgraph import cli
+from airflow_depgraph.client import ApiError
 
 FIX = str(Path(__file__).parent / "fixtures" / "snapshot_small.json")
 URL = "https://airflow.example.com"
@@ -32,6 +33,12 @@ class FakeClient:
 
     def __init__(self, url, token=None, timeout=None):
         self.url, self.token = url, token
+
+    def bulk_dag_runs(self, dag_ids, since_iso, per_dag=None):   # an older Airflow
+        raise ApiError("404 on dagRuns/list", 404, "/dagRuns/list")
+
+    def bulk_task_instances(self, dag_ids, run_ids, states):
+        raise ApiError("404 on taskInstances/list", 404, "/taskInstances/list")
 
     @classmethod
     def login(cls, url, user, password, timeout=None):

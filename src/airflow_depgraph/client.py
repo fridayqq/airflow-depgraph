@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.client
 import json
+from collections import Counter
 import os
 import sys
 import threading
@@ -21,6 +22,9 @@ RETRIES = 2                 # extra attempts after the first one
 LOGIN_RETRIES = 1           # POST /auth/token is retried at most once
 BACKOFF = (1, 3)            # seconds before the first and the second retry
 MAX_RETRY_AFTER = 30
+RUNS_PATH = "/api/v2/dags/~/dagRuns/list"
+TASKS_PATH = "/api/v2/dags/~/dagRuns/~/taskInstances/list"
+BULK_PAGE = 100             # page_limit and the most ids sent in one bulk request
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _noted_redirects: set[str] = set()   # URLs already reported as redirecting, once per process
 _PROXY_VARS = ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy")
@@ -30,6 +34,10 @@ def _proxied() -> bool:
     # http.client ignores proxy variables and urllib honours them, so with a proxy every request
     # goes through urlopen instead of the pooled connection.
     return any(os.environ.get(v) for v in _PROXY_VARS)
+
+
+def _chunks(items: list, size: int) -> list[list]:
+    return [items[i:i + size] for i in range(0, len(items), size)]
 
 
 def _note_redirect(url: str, location: str) -> None:
@@ -229,6 +237,55 @@ class AirflowClient:
             done = len(out) >= total if isinstance(total, int) else len(page) < page_size
             if not page or done:
                 return out
+
+    def post(self, path: str, body: dict) -> dict:
+        headers = {"Content-Type": "application/json", "Accept": "application/json",
+                   "User-Agent": USER_AGENT}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        req = urllib.request.Request(self.url + path, data=json.dumps(body).encode(),
+                                     method="POST", headers=headers)
+        return self._send(req, path)
+
+    def bulk_dag_runs(self, dag_ids: list[str], since_iso: str,
+                      per_dag: int | None = None) -> list[dict]:
+        """Runs of the DAGs started since `since_iso`, newest first overall. With `per_dag`,
+        paging stops once every DAG has that many runs (the newest ones come first)."""
+        out: list[dict] = []
+        for chunk in _chunks(list(dag_ids), BULK_PAGE):
+            counts: Counter = Counter()
+            offset = 0
+            while True:
+                data = self.post(RUNS_PATH, {
+                    "dag_ids": chunk, "order_by": "-run_after", "page_limit": BULK_PAGE,
+                    "page_offset": offset, "run_after_gte": since_iso})
+                page = data.get("dag_runs") or []
+                out.extend(page)
+                counts.update(r.get("dag_id") for r in page)
+                offset += len(page)
+                total = data.get("total_entries")
+                if (not page or (isinstance(total, int) and offset >= total)
+                        or (per_dag is not None and all(counts[d] >= per_dag for d in chunk))):
+                    break
+        return out
+
+    def bulk_task_instances(self, dag_ids: list[str], run_ids: list[str],
+                            states: list[str] | tuple[str, ...]) -> list[dict]:
+        """Task instances of the given runs in the given states, paged."""
+        out: list[dict] = []
+        for chunk in _chunks(list(run_ids), BULK_PAGE):
+            offset = 0
+            while True:
+                data = self.post(TASKS_PATH, {
+                    "dag_ids": list(dag_ids), "dag_run_ids": chunk, "state": list(states),
+                    "page_limit": BULK_PAGE, "page_offset": offset})
+                page = data.get("task_instances") or []
+                out.extend(page)
+                offset += len(page)
+                total = data.get("total_entries")
+                if not page or (isinstance(total, int) and offset >= total):
+                    break
+        return out
 
     def dag(self, dag_id: str) -> dict:
         return self.get(f"/api/v2/dags/{self._q(dag_id)}")

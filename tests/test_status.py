@@ -1,3 +1,7 @@
+from collections import Counter
+
+import pytest
+
 from airflow_depgraph.client import ApiError
 from airflow_depgraph.presets import Settings
 from airflow_depgraph.status import classify_runs, fetch_status
@@ -76,6 +80,12 @@ def test_only_skipped_successes_is_none():
 
 
 class FakeClient:
+    def bulk_dag_runs(self, dag_ids, since_iso, per_dag=None):   # an older Airflow
+        raise ApiError("404 on dagRuns/list", 404, "/dagRuns/list")
+
+    def bulk_task_instances(self, dag_ids, run_ids, states):
+        raise ApiError("404 on taskInstances/list", 404, "/taskInstances/list")
+
     def dag(self, dag_id):
         if dag_id == "dag_bad":
             raise ApiError("boom", 500, "/dags/dag_bad")
@@ -155,3 +165,132 @@ def test_task_list_error_keeps_status_and_omits_tasks():
     assert out["dag_403"]["last_run"]["state"] == "success"
     assert "tasks" not in out["dag_403"]
     assert out["dag_a"]["tasks"] == ["a", "b"]
+
+
+class BulkFake:
+    """In-memory Airflow for the per-DAG and the bulk endpoints; counts each kind of call."""
+
+    def __init__(self, runs, tis, bulk_status=None):
+        self.runs, self.tis, self.bulk_status = runs, tis, bulk_status
+        self.calls = Counter()
+
+    def dag(self, dag_id):
+        self.calls["dag"] += 1
+        return {"is_paused": False, "timetable_summary": "Daily", "owners": ["me"]}
+
+    def dag_runs(self, dag_id, limit):
+        self.calls["dag_runs"] += 1
+        return self.runs.get(dag_id, [])[:limit]
+
+    def task_instances(self, dag_id, run_id, state=None):
+        self.calls["task_instances"] += 1
+        return self.tis.get((dag_id, run_id), [])
+
+    def bulk_dag_runs(self, dag_ids, since_iso, per_dag=None):
+        if self.bulk_status:
+            raise ApiError("no bulk", self.bulk_status, "/dagRuns/list")
+        self.calls["bulk_runs"] += 1
+        return [r for d in dag_ids for r in self.runs.get(d, [])]
+
+    def bulk_task_instances(self, dag_ids, run_ids, states):
+        if self.bulk_status:
+            raise ApiError("no bulk", self.bulk_status, "/taskInstances/list")
+        self.calls["bulk_tis"] += 1
+        return [dict(ti, dag_id=d, dag_run_id=r) for (d, r), items in self.tis.items()
+                if d in dag_ids and r in run_ids for ti in items if ti["state"] in states]
+
+
+def _run(dag, run_id, state, run_after="2026-10-20T00:00:00+00:00"):
+    return {"dag_id": dag, "dag_run_id": run_id, "state": state, "run_after": run_after}
+
+
+def _cases():
+    """One DAG per classify_runs case, with the same data the per-DAG path would see."""
+    runs = {
+        "d_success": [_run("d_success", "s2", "success"), _run("d_success", "s1", "failed")],
+        "d_empty": [_run("d_empty", "e2", "success"), _run("d_empty", "e1", "success")],
+        "d_tests": [_run("d_tests", "t1", "failed")],
+        "d_pipe": [_run("d_pipe", "p2", "running"), _run("d_pipe", "p1", "failed")],
+        "d_running": [_run("d_running", "g1", "running")],
+        "d_skipped": [_run("d_skipped", "k1", "success")],
+        "d_nodata": [],
+    }
+    tis = {
+        ("d_success", "s2"): [{"task_id": "a", "state": "success"}, {"task_id": "b", "state": "skipped"}],
+        ("d_success", "s1"): [{"task_id": "a", "state": "failed"}],
+        ("d_empty", "e2"): [{"task_id": "a", "state": "skipped"}, {"task_id": "b", "state": None}],
+        ("d_empty", "e1"): [{"task_id": "a", "state": "success"}],
+        ("d_tests", "t1"): [{"task_id": "dbt_test", "state": "failed"},
+                            {"task_id": "report", "state": "upstream_failed"}],
+        ("d_pipe", "p1"): [{"task_id": "dbt_test", "state": "failed"},
+                           {"task_id": "load", "state": "failed"}],
+        ("d_skipped", "k1"): [{"task_id": "a", "state": "skipped"}],
+    }
+    return runs, tis
+
+
+def _catalog(ids):
+    return {d: {"is_paused": False, "schedule": "Daily", "owners": ["me"], "is_stale": False}
+            for d in ids}
+
+
+def test_bulk_matches_per_dag_path_case_by_case():
+    from airflow_depgraph import status
+    runs, tis = _cases()
+    ids = list(runs)
+    cat = _catalog(ids)
+    s = Settings(status_runs_lookback=2)
+    fake = BulkFake(runs, tis)
+    per = {d: status._one(fake, d, s, False, cat) for d in ids}
+    fake.calls.clear()
+    bulk = fetch_status(fake, ids, s, with_tasks=False, catalog=cat)
+    assert bulk == per
+    # Two DAGs reach the lookback in the bulk listing; the rest have fewer runs and go per DAG.
+    assert fake.calls["bulk_runs"] >= 1 and fake.calls["bulk_tis"] >= 1
+    assert fake.calls["dag_runs"] == 4  # d_tests, d_running, d_skipped, d_nodata
+    assert bulk["d_success"]["last_run"]["state"] == "success"
+    assert bulk["d_empty"]["last_run"]["run_id"] == "e1"
+    assert bulk["d_tests"]["last_run"]["kind"] == "tests"
+    assert bulk["d_pipe"]["last_run"]["kind"] == "pipeline"
+    assert bulk["d_running"]["last_run"] is None and bulk["d_skipped"]["last_run"] is None
+    assert bulk["d_nodata"]["last_run"] is None
+
+
+def test_bulk_uses_few_calls_for_fifty_dags():
+    ids = [f"d{i}" for i in range(50)]
+    runs = {d: [_run(d, f"r{d}-{k}", "success") for k in range(5)] for d in ids}
+    tis = {(d, f"r{d}-{k}"): [{"task_id": "a", "state": "success"}] for d in ids for k in range(5)}
+    fake = BulkFake(runs, tis)
+    out = fetch_status(fake, ids, Settings(), with_tasks=False, catalog=_catalog(ids))
+    assert all(out[d]["last_run"]["state"] == "success" for d in ids)
+    assert fake.calls["bulk_runs"] == 1 and fake.calls["bulk_tis"] == 1
+    assert fake.calls["dag_runs"] == 0 and fake.calls["task_instances"] == 0
+
+
+def test_dag_with_fewer_runs_than_lookback_is_read_per_dag():
+    ids = ["d_few"]
+    fake = BulkFake({"d_few": [_run("d_few", "r1", "success")]},
+                    {("d_few", "r1"): [{"task_id": "a", "state": "success"}]})
+    out = fetch_status(fake, ids, Settings(), with_tasks=False, catalog=_catalog(ids))
+    assert out["d_few"]["last_run"]["run_id"] == "r1"
+    assert fake.calls["dag_runs"] == 1
+
+
+@pytest.mark.parametrize("status_code", [404, 405])
+def test_missing_bulk_endpoint_falls_back_to_per_dag(status_code):
+    from airflow_depgraph import status
+    runs, tis = _cases()
+    ids = list(runs)
+    cat = _catalog(ids)
+    fake = BulkFake(runs, tis, bulk_status=status_code)
+    per = {d: status._one(BulkFake(runs, tis), d, Settings(), False, cat) for d in ids}
+    assert fetch_status(fake, ids, Settings(), with_tasks=False, catalog=cat) == per
+    assert fake.calls["bulk_runs"] == 0 and fake.calls["dag_runs"] == len(ids)
+
+
+def test_bulk_401_is_raised():
+    runs, tis = _cases()
+    fake = BulkFake(runs, tis, bulk_status=401)
+    with pytest.raises(ApiError) as ei:
+        fetch_status(fake, list(runs), Settings(), with_tasks=False)
+    assert ei.value.status == 401
