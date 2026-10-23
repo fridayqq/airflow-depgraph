@@ -671,3 +671,29 @@ def test_report_unlinked_without_catalog_exits_1(tmp_path, capsys):
     snapmod.dump(replace(snapmod.load(Path(FIX)), catalog=None), path)
     assert cli.main(["report", "unlinked", str(path)]) == 1
     assert "snapshot has no catalog" in capsys.readouterr().err
+
+
+def test_live_downstream_queries_status_only_for_hit_dags(live, monkeypatch, capsys):
+    calls = []
+
+    class CountingClient(FakeClient):
+        def dag_runs(self, dag_id, limit):
+            calls.append(dag_id)
+            return []
+
+    monkeypatch.setattr(cli, "AirflowClient", CountingClient)
+    assert cli.main(["downstream", "x", "--url", URL]) == 0
+    assert calls == ["y"]
+
+
+def test_live_upstream_queries_status_only_for_hit_dags(live, monkeypatch, capsys):
+    calls = []
+
+    class CountingClient(FakeClient):
+        def dag_runs(self, dag_id, limit):
+            calls.append(dag_id)
+            return []
+
+    monkeypatch.setattr(cli, "AirflowClient", CountingClient)
+    assert cli.main(["upstream", "y", "--url", URL]) == 0
+    assert calls == ["x"]

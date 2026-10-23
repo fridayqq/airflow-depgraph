@@ -9,6 +9,7 @@ from collections import Counter
 from pathlib import Path
 
 from airflow_depgraph.graph import Graph, reach_dags
+from airflow_depgraph.labels import strip_asset_prefix
 from airflow_depgraph.presets import Settings
 from airflow_depgraph.snapshot import Snapshot, with_inferred
 
@@ -66,8 +67,8 @@ def build_view(snap: Snapshot, s: Settings, status_override: dict | None = None)
     for raw in raw_nodes:
         nid, ntype = raw["id"], raw["type"]
         label = raw["label"]
-        if ntype != "dag" and s.asset_label_strip_prefix:
-            label = label.removeprefix(s.asset_label_strip_prefix)
+        if ntype != "dag":
+            label = strip_asset_prefix(label, s.asset_label_strip_prefix)
         node: dict = {
             "id": nid,
             "label": label,

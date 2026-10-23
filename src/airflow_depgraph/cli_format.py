@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from airflow_depgraph.graph import Hit
+from airflow_depgraph.labels import normalise_state, state_label, strip_asset_prefix
 from airflow_depgraph.snapshot import Snapshot
 
 TITLES = {
@@ -20,23 +21,10 @@ def _text_via(hit: Hit, strip_prefix: str | None) -> str:
         return "—"
     via = hit.via
     if strip_prefix and via.startswith("asset:"):
-        via = "asset:" + via[len("asset:"):].removeprefix(strip_prefix)
+        via = "asset:" + strip_asset_prefix(via[len("asset:"):], strip_prefix)
     if hit.guard:
         via = via.removesuffix(" (inferred)") + " (guard)"
     return via
-
-
-def _state_text(d: dict) -> str | None:
-    """ok, FAILED (kind), or another run state as is; None without status."""
-    last = d.get("last_run")
-    if not last:
-        return None
-    state = last.get("state")
-    if state == "success":
-        return "ok"
-    if state == "failed":
-        return f"FAILED ({last['kind']})" if last.get("kind") else "FAILED"
-    return state
 
 
 def _last_run_text(d: dict) -> str | None:
@@ -45,7 +33,7 @@ def _last_run_text(d: dict) -> str | None:
 
 
 def _row_suffix(d: dict) -> str:
-    return "".join(f" · {part}" for part in (_state_text(d), _last_run_text(d)) if part)
+    return "".join(f" · {part}" for part in (state_label(d.get("last_run")), _last_run_text(d)) if part)
 
 
 def format_hits(hits: list[Hit], info: dict[str, dict], url: str | None,
@@ -80,7 +68,7 @@ def format_tree(hits: list[Hit], info: dict[str, dict], start: str,
             row = f"{'  ' * (depth - 1)}└ {h.dag_id}"
             if h.via is not None:
                 row += f"  via {_text_via(h, strip_prefix)}"
-            state = _state_text(info.get(h.dag_id) or {})
+            state = state_label((info.get(h.dag_id) or {}).get("last_run"))
             row += f"  · {state}" if state else ""
             lines.append(row)
             walk(h.dag_id, depth + 1)
@@ -106,7 +94,7 @@ def hits_json(dag: str, direction: str, depth: int, hits: list[Hit],
         row = {"dag_id": h.dag_id, "hops": h.hops, "via": h.via,
                "is_paused": d.get("is_paused"), "schedule": d.get("schedule"),
                "owners": d.get("owners"), "parent": h.parent,
-               "state": last.get("state") if last.get("state") in ("success", "failed") else None,
+               "state": normalise_state(last.get("state")),
                "kind": last.get("kind"),
                "last_run_at": last.get("run_after")}
         if with_tasks:

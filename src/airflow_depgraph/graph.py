@@ -75,6 +75,8 @@ def walk(g: Graph, start: str, direction: Direction, depth: int = 5) -> list[Hit
 
     while frontier and hops < depth:
         # found: DAG -> (via, guard, parent); the queue carries the DAG each branch started from.
+        # FIFO queue over the sorted frontier: the first branch to reach a DAG is the lowest-id
+        # parent on equal-length paths.
         found: dict[str, tuple[str | None, bool, str]] = {}
         queue: deque[tuple[str, str | None, bool, str]] = deque(
             (d, None, False, d) for d in frontier)
@@ -90,7 +92,6 @@ def walk(g: Graph, start: str, direction: Direction, depth: int = 5) -> list[Hit
 
         hops += 1
         next_frontier = []
-        # Equal-length paths: branches are expanded in sorted order, so the lowest-id parent wins.
         for dag_node in sorted(found):
             seen_dags.add(dag_node)
             via, guard, origin = found[dag_node]

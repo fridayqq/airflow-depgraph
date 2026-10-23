@@ -14,6 +14,7 @@ from pathlib import Path
 
 from airflow_depgraph import __version__
 from airflow_depgraph import report
+from airflow_depgraph.labels import state_label
 from airflow_depgraph import snapshot as snapmod
 from airflow_depgraph.auth import CredentialsError, resolve_password, resolve_user
 from airflow_depgraph.cli_format import TITLES, format_hits, format_tree, hits_json, stamp
@@ -252,14 +253,9 @@ def _report_table(kind: str, rows: list[dict]) -> tuple[list[str], list[list[str
     def joined(values) -> str:
         return ", ".join(values) if values else "—"
     if kind == "critical":
-        def state(r: dict) -> str:
-            if r["state"] == "success":
-                return "ok"
-            if r["state"] == "failed":
-                return f"FAILED ({r['kind']})" if r["kind"] else "FAILED"
-            return "—"
-        return (["rank", "dag_id", "downstream", "direct", "state"],
-                [[r["rank"], r["dag_id"], r["downstream"], r["direct_consumers"], state(r)]
+        return (["rank", "dag_id", "downstream", "direct consumers", "state"],
+                [[r["rank"], r["dag_id"], r["downstream"], r["direct_consumers"],
+                  state_label({"state": r["state"], "kind": r["kind"]}) or "—"]
                  for r in rows])
     if kind == "unlinked":
         return (["dag_id", "schedule", "paused", "tags"],

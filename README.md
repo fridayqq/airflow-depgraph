@@ -355,6 +355,8 @@ airflow-depgraph report failing graph.json             # last decisive run faile
 `--all-tags` turns the filter off. `unlinked` needs a catalog and `failing` needs status in the
 snapshot, so fetch with `--with-status` for the failing report. `--json` prints a list instead of a table.
 
+A DAG linked only by a deploy guard counts as linked in `report unlinked`.
+
 ## Snapshot format
 
 Snapshots are JSON, format 1:

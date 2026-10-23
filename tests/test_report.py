@@ -36,7 +36,36 @@ def test_critical_top_limits_rows(snap):
 
 def test_critical_tag_filter_keeps_only_tagged_dags(snap):
     rows = report.critical(snap, Settings(), tags=("team-a",))
-    assert set(ids(rows)) == {"dag_a", "dag_b", "dag_h", "dag_m_stale"}  # stale DAGs still rank
+    assert set(ids(rows)) == {"dag_a", "dag_b", "dag_h"}
+
+
+def test_critical_excludes_stale_dags(snap):
+    rows = report.critical(snap, Settings())
+    assert "dag_m_stale" not in ids(rows)
+
+
+def _with_inferred_and_guard(snap):
+    entries = [
+        # dag_q's sensor waits for dag_a: a data link, so dag_q is downstream of dag_a
+        {"dag": "dag_q", "task": "wait_a", "operator": "PythonSensor", "source": "rendered",
+         "targets": ["dag_a"], "target_tasks": [], "kind": "data"},
+        # dag_r's deploy guard on dag_a: must not count as downstream
+        {"dag": "dag_r", "task": "guard_a", "operator": "PythonSensor", "source": "rendered",
+         "targets": ["dag_a"], "target_tasks": [], "kind": "guard"},
+    ]
+    return dataclasses.replace(snap, inferred=entries)
+
+
+def test_critical_counts_inferred_links_and_skips_guards(snap):
+    snap = _with_inferred_and_guard(snap)
+    rows = {r["dag_id"]: r for r in report.critical(snap, Settings())}
+    assert rows["dag_a"]["downstream"] == 10  # 9 explicit + dag_q, not dag_r
+
+
+def test_critical_no_inferred_drops_inferred_links(snap):
+    snap = _with_inferred_and_guard(snap)
+    rows = {r["dag_id"]: r for r in report.critical(snap, Settings(), inferred=False)}
+    assert rows["dag_a"]["downstream"] == 9 and "dag_q" not in rows
 
 
 def test_critical_without_catalog_and_tags_is_an_error(snap):

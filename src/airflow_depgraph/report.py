@@ -7,8 +7,9 @@ from __future__ import annotations
 import re
 
 from airflow_depgraph.graph import Graph, reach_dags, walk
+from airflow_depgraph.labels import normalise_state, strip_asset_prefix
 from airflow_depgraph.presets import Settings
-from airflow_depgraph.snapshot import Snapshot
+from airflow_depgraph.snapshot import Snapshot, with_inferred
 
 KINDS = ("critical", "unlinked", "unconsumed-assets", "failing")
 _CRON_FALLBACK = re.compile(r"\bor\b", re.IGNORECASE)
@@ -46,13 +47,22 @@ def _tag_ok(snap: Snapshot, dag: str, tags: tuple[str, ...] | None) -> bool:
 def _status(snap: Snapshot, dag: str) -> dict:
     last = ((snap.dags or {}).get(dag) or {}).get("last_run") or {}
     state = last.get("state")
-    return {"state": state if state in ("success", "failed") else None, "kind": last.get("kind")}
+    return {"state": normalise_state(state), "kind": last.get("kind")}
 
 
 def _schedule(snap: Snapshot, dag: str) -> str | None:
     if snap.catalog is not None and dag in snap.catalog:
         return snap.catalog[dag].get("schedule")
     return ((snap.dags or {}).get(dag) or {}).get("schedule")
+
+
+def _live_graph(snap: Snapshot, inferred: bool) -> Graph:
+    """Graph without stale catalog DAGs (their nodes and edges are dropped)."""
+    nodes, edges = with_inferred(snap.nodes, snap.edges, snap.inferred if inferred else None)
+    stale = {f"dag:{d}" for d, c in (snap.catalog or {}).items() if c.get("is_stale")}
+    nodes = [n for n in nodes if n["id"] not in stale]
+    edges = [e for e in edges if e["source_id"] not in stale and e["target_id"] not in stale]
+    return Graph.from_payload(nodes, edges)
 
 
 def _downstream_ids(g: Graph, dag: str) -> list[str]:
@@ -63,9 +73,9 @@ def _downstream_ids(g: Graph, dag: str) -> list[str]:
 
 def critical(snap: Snapshot, s: Settings, *, tags: tuple[str, ...] | None = None,
              inferred: bool = True, top: int = 20) -> list[dict]:
-    """DAGs ranked by transitive downstream DAG count (guards excluded)."""
+    """DAGs ranked by transitive downstream DAG count (guards and stale DAGs excluded)."""
     _check_tags(snap, tags)
-    g = snap.graph_for(inferred=inferred, guards=False)
+    g = _live_graph(snap, inferred)
     rows = []
     for dag in g.dag_ids:
         if not _tag_ok(snap, dag, tags):
@@ -110,10 +120,8 @@ def unconsumed_assets(snap: Snapshot, s: Settings, *,
                            if g.nodes[n].type == "dag")
         if not producers or (tags is not None and not any(_tag_ok(snap, p, tags) for p in producers)):
             continue
-        label = node.label
-        if s.asset_label_strip_prefix:
-            label = label.removeprefix(s.asset_label_strip_prefix)
-        rows.append({"asset": label, "producers": producers})
+        rows.append({"asset": strip_asset_prefix(node.label, s.asset_label_strip_prefix),
+                     "producers": producers})
     return sorted(rows, key=lambda r: r["asset"])
 
 
