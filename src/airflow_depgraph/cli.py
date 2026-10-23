@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import difflib
 import json
 import os
 import re
@@ -75,13 +76,37 @@ def _live_snapshot(client: AirflowClient, s: Settings, node_id: str | None) -> S
 
 
 def _walk(snap: Snapshot, dag: str, direction: str, depth: int,
-          inferred: bool = True, guards: bool = False) -> list[Hit]:
+          inferred: bool = True, guards: bool = False) -> list[Hit] | None:
+    """None when the DAG is not a node of the graph (see _unlinked)."""
     g = snap.graph if inferred and not guards else snap.graph_for(inferred, guards)
     try:
         return walk(g, dag, direction, depth)
     except KeyError:
-        raise CliError(f"dag '{dag}' is not in the dependency graph "
-                       f"({len(g.dag_ids)} DAGs known)") from None
+        return None
+
+
+def _unlinked(snap: Snapshot, dag: str, direction: str, args: argparse.Namespace) -> int:
+    """Explain why DAG is not in the traversal graph; exit 0 only for a real DAG without links."""
+    inferred = not args.no_inferred
+    if f"dag:{dag}" in snap.graph_for(inferred, guards=True).nodes \
+            and f"dag:{dag}" not in snap.graph_for(inferred, guards=False).nodes:
+        raise CliError(f"dag '{dag}' is only linked by deploy guards; add --include-guards")
+    cat = (snap.catalog or {}).get(dag)
+    if cat is not None and not cat.get("is_stale"):
+        schedule = cat.get("schedule") or "—"
+        if args.json:
+            print(json.dumps({"dag": dag, "direction": direction, "depth": args.depth,
+                              "dags": [], "note": "no explicit dependencies"},
+                             indent=2, ensure_ascii=False))
+        else:
+            print(f"dag '{dag}' exists but has no explicit dependencies (schedule: {schedule})")
+        return 0
+    g = snap.graph_for(inferred, guards=args.include_guards)
+    ids = sorted(set(g.dag_ids) | set((snap.catalog or {}).keys()))
+    close = difflib.get_close_matches(dag, ids, n=3, cutoff=0.6)
+    suffix = f" — did you mean: {', '.join(close)}?" if close else ""
+    raise CliError(f"dag '{dag}' is not in the dependency graph "
+                   f"({len(g.dag_ids)} DAGs known){suffix}")
 
 
 def _fetch_dags(client: AirflowClient, snap: Snapshot, s: Settings) -> dict | None:
@@ -256,15 +281,18 @@ def _query(args: argparse.Namespace, direction: str) -> int:
         snap = _live_snapshot(client, s, None)
         if s.infer_sensors:
             snap.inferred = _infer(client, snap)
-    hits = _walk(snap, args.dag, direction, args.depth,
+    dag = args.dag.removeprefix("dag:")
+    hits = _walk(snap, dag, direction, args.depth,
                  inferred=not args.no_inferred, guards=args.include_guards)
+    if hits is None:
+        return _unlinked(snap, dag, direction, args)
     info = {h.dag_id: _dag_info(client, snap, h.dag_id) for h in hits}
     if regex:
         hits = _match_tasks(client, snap, hits, regex, info)
     if args.json:
-        print(hits_json(args.dag, direction, args.depth, hits, info, regex is not None))
+        print(hits_json(dag, direction, args.depth, hits, info, regex is not None))
     else:
-        header = f"{TITLES[direction]} of {args.dag} — {len(hits)} (depth ≤ {args.depth}, {stamp(snap if args.snapshot else None)})"
+        header = f"{TITLES[direction]} of {dag} — {len(hits)} (depth ≤ {args.depth}, {stamp(snap if args.snapshot else None)})"
         print(format_hits(hits, info, snap.source or s.url, direction, header))
     return 0
 

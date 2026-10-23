@@ -409,3 +409,45 @@ def test_tasks_matching_rejects_snapshot_path_as_regex(capsys):
 def test_tasks_matching_rejects_json_name_as_regex(capsys):
     assert cli.main(["downstream", "dag_e", "--tasks-matching", "snapshot.json"]) == 1
     assert "looks like a snapshot file" in capsys.readouterr().err
+
+
+def test_catalog_only_dag_says_no_dependencies(capsys):
+    assert cli.main(["downstream", "dag_x_cron", FIX]) == 0
+    out = capsys.readouterr().out
+    assert "dag 'dag_x_cron' exists but has no explicit dependencies (schedule: 0 1 * * *)" in out
+
+
+def test_catalog_only_dag_json_note(capsys):
+    assert cli.main(["downstream", "dag_x_cron", FIX, "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out == {"dag": "dag_x_cron", "direction": "downstream", "depth": 5,
+                   "dags": [], "note": "no explicit dependencies"}
+
+
+def test_guard_only_dag_hints_include_guards(tmp_path, inferred_snapshot, capsys):
+    from airflow_depgraph import snapshot as snapmod
+    path = tmp_path / "s.json"
+    snapmod.dump(inferred_snapshot, path)
+    assert cli.main(["downstream", "dag_y_cron", str(path)]) == 1
+    assert "only linked by deploy guards; add --include-guards" in capsys.readouterr().err
+
+
+def test_unknown_dag_suggests_close_names(capsys):
+    assert cli.main(["downstream", "dag_x_crom", FIX]) == 1
+    err = capsys.readouterr().err
+    assert "is not in the dependency graph" in err
+    assert "did you mean: dag_x_cron" in err
+
+
+def test_unknown_dag_without_close_names_has_no_suffix(capsys):
+    assert cli.main(["downstream", "zzzzzzzz", FIX]) == 1
+    err = capsys.readouterr().err
+    assert "is not in the dependency graph" in err
+    assert "did you mean" not in err
+
+
+def test_node_id_form_is_accepted(capsys):
+    assert cli.main(["downstream", "dag:dag_e", FIX, "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["dag"] == "dag_e"
+    assert out["dags"][0]["dag_id"] == "dag_l_report"
