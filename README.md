@@ -421,7 +421,7 @@ Snapshots are JSON, format 1:
 
 ```bash
 uv run pytest                     # Python tests; the page's JS tests run from here too when node is installed
-uv run ruff check .
+uvx ruff check src tests
 node --test tests/js/*.test.mjs   # graph-core.js only (list the files: older node does not expand a directory)
 ```
 
