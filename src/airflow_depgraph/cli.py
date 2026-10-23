@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import difflib
+import getpass
 import json
 import os
 import re
@@ -12,7 +13,7 @@ import sys
 from importlib import resources
 from pathlib import Path
 
-from airflow_depgraph import __version__, report
+from airflow_depgraph import __version__, report, wizard
 from airflow_depgraph import snapshot as snapmod
 from airflow_depgraph.auth import CredentialsError, resolve_password, resolve_user
 from airflow_depgraph.cli_format import TITLES, format_hits, format_tree, hits_json, stamp
@@ -37,6 +38,10 @@ class DagNotFound(CliError):
     pass
 
 
+class UsageError(CliError):
+    pass
+
+
 # Exit codes (2 is argparse's usage error).
 EXIT_OK, EXIT_ERROR, EXIT_USAGE = 0, 1, 2
 EXIT_CREDENTIALS, EXIT_NETWORK, EXIT_DAG_NOT_FOUND, EXIT_INTERRUPTED = 3, 4, 5, 130
@@ -49,7 +54,8 @@ _AUTH_PATHS = ("/auth/token", "/ui/dependencies")
 def _settings(args: argparse.Namespace) -> Settings:
     cli = {k: getattr(args, k, None)
            for k in ("url", "user", "token", "with_status", "with_tasks", "title", "highlight",
-                     "infer_sensors", "timeout", "workers", "bulk_status")}
+                     "infer_sensors", "timeout", "workers", "bulk_status",
+                     "user_env", "password_env", "password_cmd")}
     if getattr(args, "tags", None):
         cli["tags"] = tuple(args.tags)
     if getattr(args, "token_stdin", False):
@@ -449,27 +455,122 @@ def cmd_presets(args: argparse.Namespace) -> int:
     return 0
 
 
+def _init_given(args: argparse.Namespace) -> dict:
+    return {k: getattr(args, k) for k in (
+        "name", "url", "user_env", "password_env", "password_cmd", "tags", "strip_prefix",
+        "highlight", "highlight_label", "title", "with_status", "infer_sensors",
+        "tests_task_regex", "task_query_regex", "lookback", "timeout", "workers")}
+
+
+def _tty() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    if args.json and not args.discover:
+        raise UsageError("--json only works with --discover")
+    if args.discover:
+        return _init_discover(args)
+    given = _init_given(args)
+    try:
+        wizard.validate_given(given)
+    except ValueError as exc:
+        raise UsageError(str(exc)) from None
+    if not args.yes and not _tty():
+        raise UsageError("init asks questions; run it in a terminal, "
+                         "or pass --yes with flags (see --help)")
+    target = wizard.target_dir(args.dir, os.environ)
+    try:
+        if args.yes:
+            return _init_batch(args, given, target)
+        color = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+        prompter = wizard.Prompter(input_fn=input, getpass_fn=getpass.getpass,
+                                   out=sys.stdout, color=color)
+        return wizard.run_interactive(
+            prompter, given, env=os.environ, target=target, client_cls=AirflowClient,
+            user=args.user, token=_init_token(args), force=args.force, no_check=args.no_check)
+    except (KeyboardInterrupt, EOFError):
+        print("\ninterrupted, nothing written", file=sys.stderr)
+        return EXIT_INTERRUPTED
+
+
+def _init_token(args: argparse.Namespace) -> str | None:
+    return _settings(args).token
+
+
+def _init_discover(args: argparse.Namespace) -> int:
+    if not args.url:
+        raise UsageError("--discover needs --url")
+    s = _settings(args)
+    d = wizard.discover(_client(s, args), s)
+    print(json.dumps(d.to_json(), indent=2, ensure_ascii=False) if args.json
+          else wizard.format_report(d))
+    return 0
+
+
+def _init_batch(args: argparse.Namespace, given: dict, target: Path) -> int:
+    if not args.name:
+        raise UsageError("--yes needs a preset NAME")
+    if not args.url:
+        raise UsageError("--yes needs --url")
+    try:
+        name = wizard.validate_name(args.name)
+        url = wizard.normalize_url(args.url)
+    except ValueError as exc:
+        raise UsageError(str(exc)) from None
+    path = target / f"{name}.toml"
+    if path.exists() and not args.force:
+        raise FileExistsError(f"{path} already exists; pass --force to overwrite it")
+    if not args.no_check:
+        wizard.check_health(AirflowClient, url, given["timeout"] or Settings.timeout)
+        args.url = url
+        s = _settings(args)
+        client = _client(s, args)
+        if given["tags"]:
+            known = {t for t, _ in wizard.tag_counts(client.list_dags())}
+            for tag in given["tags"]:
+                if tag not in known:
+                    print(f"warning: no DAG has tag {tag}", file=sys.stderr)
+    values = wizard.build_values(name, url, given)
+    wizard.write_preset(path, wizard.render_preset(values), force=args.force)
+    print(wizard.written_message(path, name, values, os.environ,
+                                 wizard.in_lookup_dirs(target, os.environ)))
+    return 0
+
+
 # ---------- argparse ----------
 
 
 def _parser() -> argparse.ArgumentParser:
-    common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--preset", help="preset name or path to a .toml file")
-    common.add_argument("--url", help="Airflow base URL")
-    common.add_argument("--user", help="Airflow user name")
-    common.add_argument("--password-stdin", action="store_true", help="read the password from stdin")
-    token_group = common.add_mutually_exclusive_group()
-    token_group.add_argument("--token", help="bearer token (skips login); visible in shell history")
-    token_group.add_argument("--token-stdin", action="store_true",
-                             help="read the bearer token from the first line of stdin")
+    def connection(with_preset: bool) -> argparse.ArgumentParser:
+        parser = argparse.ArgumentParser(add_help=False)
+        if with_preset:
+            parser.add_argument("--preset", help="preset name or path to a .toml file")
+        parser.add_argument("--url", help="Airflow base URL")
+        parser.add_argument("--user", help="Airflow user name")
+        parser.add_argument("--password-stdin", action="store_true",
+                            help="read the password from stdin")
+        group = parser.add_mutually_exclusive_group()
+        group.add_argument("--token", help="bearer token (skips login); visible in shell history")
+        group.add_argument("--token-stdin", action="store_true",
+                           help="read the bearer token from the first line of stdin")
+        return parser
 
-    net_opts = argparse.ArgumentParser(add_help=False)
-    net_opts.add_argument("--timeout", type=float, default=None, metavar="SECONDS",
-                          help="seconds to wait for one API request, retries excluded (default 25)")
-    net_opts.add_argument("--workers", type=int, default=None, metavar="N",
-                          help="parallel API requests for status, task lists and sensors (default 8)")
-    net_opts.add_argument("--no-bulk-status", dest="bulk_status", action="store_const", const=False,
-                          default=None, help="read the run status of each DAG instead of the bulk listings")
+    def network(bulk: bool) -> argparse.ArgumentParser:
+        parser = argparse.ArgumentParser(add_help=False)
+        parser.add_argument("--timeout", type=float, default=None, metavar="SECONDS",
+                            help="seconds to wait for one API request, retries excluded "
+                                 "(default 25)")
+        parser.add_argument("--workers", type=int, default=None, metavar="N",
+                            help="parallel API requests for status, task lists and sensors "
+                                 "(default 8)")
+        if bulk:
+            parser.add_argument("--no-bulk-status", dest="bulk_status", action="store_const",
+                                const=False, default=None,
+                                help="read the run status of each DAG instead of the bulk listings")
+        return parser
+
+    common, net_opts = connection(True), network(True)
 
     fetch_opts = argparse.ArgumentParser(add_help=False)
     fetch_opts.add_argument("--with-status", action="store_true", default=None,
@@ -597,12 +698,62 @@ def _parser() -> argparse.ArgumentParser:
                        "airflow-depgraph presets --example"])
     pr.add_argument("--example", action="store_true", help="print the example preset")
     pr.set_defaults(func=cmd_presets)
+
+    ini = add("init", parents=[connection(False), network(False), tag_opts],
+              help="create a preset by answering questions",
+              description="Create a preset file by questionnaire. Every answer is checked against "
+                          "the live Airflow, which also proposes tags, asset prefixes and "
+                          "settings. With --yes everything comes from flags; --discover only "
+                          "reads and reports. The password is never stored or taken as a flag.",
+              examples=["airflow-depgraph init",
+                        "airflow-depgraph init prod --yes --url https://airflow.example.com "
+                        "--tag team-a",
+                        "airflow-depgraph init --discover --json --url https://airflow.example.com"])
+    ini.set_defaults(preset="none")
+    ini.add_argument("name", nargs="?", help="preset name, [a-zA-Z0-9_-]+ (asked when omitted)")
+    ini.add_argument("--user-env", help="env var that holds the user name (default "
+                                        "AIRFLOW_DEPGRAPH_USER)")
+    ini.add_argument("--password-env", help="env var that holds the password (default "
+                                            "AIRFLOW_DEPGRAPH_PASSWORD)")
+    ini.add_argument("--password-cmd", help="command that prints the password, e.g. "
+                                            "'pass show airflow/prod'")
+    ini.add_argument("--strip-prefix", help="prefix removed from asset labels")
+    ini.add_argument("--highlight", help="regex of DAG ids to highlight")
+    ini.add_argument("--highlight-label", help="legend label for the highlighted DAGs")
+    ini.add_argument("--title", help="title of the rendered page")
+    ini.add_argument("--with-status", dest="with_status", action="store_true", default=None,
+                     help="fetch the run status of every DAG")
+    ini.add_argument("--no-status", dest="with_status", action="store_const", const=False,
+                     help="do not fetch the run status")
+    ini.add_argument("--infer-sensors", dest="infer_sensors", action="store_true", default=None,
+                     help="infer dependencies from sensors")
+    ini.add_argument("--no-infer-sensors", dest="infer_sensors", action="store_const", const=False,
+                     help="do not infer dependencies from sensors")
+    ini.add_argument("--tests-task-regex", help="regex that marks a task as a test task")
+    ini.add_argument("--task-query-regex", help="regex used by --tasks-preset")
+    ini.add_argument("--lookback", type=int, metavar="N",
+                     help="recent runs to look at for the status")
+    ini.add_argument("--dir", metavar="DIR",
+                     help="write the preset here (default $AIRFLOW_DEPGRAPH_PRESETS, else "
+                          "~/.config/airflow-depgraph/presets)")
+    ini.add_argument("--force", action="store_true", help="overwrite an existing preset")
+    ini.add_argument("--yes", action="store_true",
+                     help="ask nothing: take every value from flags")
+    ini.add_argument("--no-check", action="store_true",
+                     help="do not contact Airflow (no health or sign-in check)")
+    ini.add_argument("--discover", action="store_true",
+                     help="only read from Airflow and report what a preset could use; "
+                          "writes nothing")
+    ini.add_argument("--json", action="store_true", help="with --discover: print JSON")
+    ini.set_defaults(func=cmd_init)
     return p
 
 
 def _exit_code(exc: Exception) -> int:
     if isinstance(exc, CredentialsError):
         return EXIT_CREDENTIALS
+    if isinstance(exc, UsageError):
+        return EXIT_USAGE
     if isinstance(exc, ApiError):
         if exc.status in (401, 403) and exc.path in _AUTH_PATHS:
             return EXIT_CREDENTIALS

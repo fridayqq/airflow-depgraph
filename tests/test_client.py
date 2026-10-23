@@ -568,3 +568,17 @@ def test_network_errors_are_flagged_as_network(monkeypatch):
     with pytest.raises(ApiError) as ei:
         AirflowClient(URL, "t", opener=_raw_opener(b"<html>login</html>")).dependencies()
     assert ei.value.network is False
+
+
+def test_health_reads_monitor_endpoint_without_login():
+    body = {"metadatabase": {"status": "healthy"}, "scheduler": {"status": "healthy"}}
+    op = fake_opener({"/api/v2/monitor/health": body})
+    assert AirflowClient(URL, opener=op).health() == body
+    assert "authorization" not in op.calls[0]["headers"]
+
+
+def test_health_404_is_an_api_error():
+    op = fake_opener({"/api/v2/monitor/health": 404})
+    with pytest.raises(ApiError) as ei:
+        AirflowClient(URL, opener=op).health()
+    assert ei.value.status == 404

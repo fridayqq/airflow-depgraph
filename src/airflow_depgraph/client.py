@@ -238,6 +238,9 @@ class AirflowClient:
             return self.get("/ui/dependencies", node_id=node_id)
         return self.get("/ui/dependencies")
 
+    def health(self) -> dict:
+        return self.get("/api/v2/monitor/health")
+
     def version(self) -> str | None:
         try:
             return self.get("/api/v2/version").get("version")
