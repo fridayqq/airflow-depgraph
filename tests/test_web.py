@@ -490,3 +490,38 @@ def test_narrower_catalog_keeps_previous_result(cache, monkeypatch, caplog):
     dags.append("d7")                                           # 8 of 10: accepted
     t[0] = 3000
     assert c.refresh() is True and c.current()[1] == 3000
+
+
+def test_narrow_guard_does_not_latch_and_expires(cache, monkeypatch):
+    t = [1000.0]
+    c = cache(t)
+    c.offer(_jwt({"exp": 99999}))
+    dags = ["a", "waiter"] + [f"d{i}" for i in range(8)]       # 10 DAGs
+    monkeypatch.setattr(InferClient, "list_dags", lambda self: [{"dag_id": d} for d in dags])
+    assert c.refresh() is True
+    del dags[-4:]                                               # 6 DAGs: a real shrink
+    t[0] = 2000
+    assert c.refresh() is False                                 # one low cycle: rejected
+    t[0] = 2400
+    assert c.refresh() is True and c.current()[1] == 2400       # second in a row: accepted
+    dags.extend(["d4", "d5", "d6", "d7"])
+    t[0] = 3000
+    assert c.refresh() is True                                  # growth is always fine
+    del dags[-4:]
+    t[0] = 3000 + 6 * 3600 + 1                                  # stored count older than 6 h
+    assert c.refresh() is True
+
+
+def test_state_dir_removed_at_runtime_is_recreated(cache, tmp_path):
+    import shutil
+    t = [1000.0]
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    c = cache(t)
+    c.state_dir = state
+    c.offer(_jwt({"exp": 99999}))
+    assert c.refresh() is True
+    shutil.rmtree(state)
+    t[0] = 2000
+    assert c.refresh() is True
+    assert (state / c.lock_name).exists() and (state / c.state_name).exists()

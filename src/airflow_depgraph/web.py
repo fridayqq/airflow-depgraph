@@ -40,6 +40,7 @@ INFER_RETRY_SECONDS = 300
 TOKEN_MARGIN_SECONDS = 15 * 60
 MAX_ERROR_SHARE = 0.2
 MIN_CATALOG_SHARE = 0.8         # a cycle seeing fewer DAGs than this share keeps the old result
+CATALOG_COUNT_MAX_AGE = 6 * 3600   # ... unless the previous count is older, or it happens twice
 STATE_DIR_ENV = "AIRFLOW_DEPGRAPH_STATE_DIR"
 LOCK_WARN_SECONDS = 600
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -125,6 +126,7 @@ class InferenceCache:
                         "every api-server process refreshes sensor links on its own", self.state_dir)
             self._shared = False
         self._dag_count: int | None = None
+        self._low_pending = False          # the last cycle was rejected for a low DAG count
         self._lock_warned: float | None = None
         self._lock = threading.Lock()
         self._token: str | None = None
@@ -175,7 +177,12 @@ class InferenceCache:
 
     def _publish(self, entries: list[dict], at: float, dag_count: int) -> None:
         path = self.state_dir / self.state_name
-        fd, tmp = tempfile.mkstemp(dir=self.state_dir, prefix=self.state_name + ".", suffix=".tmp")
+        try:
+            fd, tmp = tempfile.mkstemp(dir=self.state_dir, prefix=self.state_name + ".", suffix=".tmp")
+        except FileNotFoundError:        # state dir removed meanwhile: recreate (same checks), retry
+            if not _private_dir(self.state_dir):
+                raise
+            fd, tmp = tempfile.mkstemp(dir=self.state_dir, prefix=self.state_name + ".", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump({"api_url": self.api_url, "updated_at": at, "dag_count": dag_count,
@@ -189,12 +196,35 @@ class InferenceCache:
         with self._lock:
             self._file_seen = (st.st_mtime_ns, st.st_size)
 
+    def _open_in_state_dir(self, name: str, flags: int) -> int:
+        """os.open in the state dir; if the dir was removed meanwhile, recreate it (same checks)
+        and try once more."""
+        try:
+            return os.open(self.state_dir / name, flags | _NOFOLLOW, 0o600)
+        except FileNotFoundError:
+            if not _private_dir(self.state_dir):
+                raise
+            return os.open(self.state_dir / name, flags | _NOFOLLOW, 0o600)
+
+    def _holds_lock_file(self) -> bool:
+        """The held lock is still the file at the lock path (not one removed with its dir)."""
+        try:
+            held = os.fstat(self._lock_fd)
+            now = os.stat(self.state_dir / self.lock_name, follow_symlinks=False)
+        except OSError:
+            return False
+        return (held.st_dev, held.st_ino) == (now.st_dev, now.st_ino)
+
     def leader(self) -> bool:
         """True when this process refreshes (holds the host-wide lock, or nothing is shared)."""
-        if not self._shared or self._lock_fd is not None:
+        if not self._shared:
             return True
+        if self._lock_fd is not None:
+            if self._holds_lock_file():
+                return True
+            self.close()
         try:
-            fd = os.open(self.state_dir / self.lock_name, os.O_RDWR | os.O_CREAT | _NOFOLLOW, 0o600)
+            fd = self._open_in_state_dir(self.lock_name, os.O_RDWR | os.O_CREAT)
         except OSError as exc:
             now = time.monotonic()
             if self._lock_warned is None or now - self._lock_warned >= LOCK_WARN_SECONDS:
@@ -258,7 +288,12 @@ class InferenceCache:
             return False
         with self._lock:
             previous = self._dag_count if self._result is not None else None
-        if previous and dag_count < MIN_CATALOG_SHARE * previous:
+            if previous and self._wall() - self._result[1] > CATALOG_COUNT_MAX_AGE:
+                previous = None
+            low = bool(previous) and dag_count < MIN_CATALOG_SHARE * previous
+            reject = low and not self._low_pending   # a second low cycle in a row is believed
+            self._low_pending = reject
+        if reject:
             log.warning("airflow-depgraph: this refresh saw %d DAGs, the previous one %d (a visitor "
                         "with fewer permissions?); keeping the previous sensor links",
                         dag_count, previous)

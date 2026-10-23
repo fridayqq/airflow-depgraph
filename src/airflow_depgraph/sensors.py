@@ -121,7 +121,12 @@ def _sensor_defs(tree: ast.Module, name: str) -> list[ast.AST]:
 
 
 def _declared(tree: ast.Module, name: str) -> int:
-    calls = sum(1 for n in ast.walk(tree) if isinstance(n, ast.Call) and _str_kw(n, "task_id") == name)
+    """How many tasks in the file are declared with this id (a decorator call counts once,
+    as its function)."""
+    decorators = {id(d) for n in ast.walk(tree)
+                  if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) for d in n.decorator_list}
+    calls = sum(1 for n in ast.walk(tree) if isinstance(n, ast.Call) and id(n) not in decorators
+                and _str_kw(n, "task_id") == name)
     return calls + len(_sensor_defs(tree, name))
 
 

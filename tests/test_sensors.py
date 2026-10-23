@@ -318,3 +318,17 @@ PythonSensor(task_id="wait", op_kwargs={"d": "dag_b"})
 """
     assert parse_source(full, "g.wait", KNOWN, "waiter") == ["dag_a"]
     assert parse_source(full, "wait", KNOWN, "waiter") == ["dag_b"]
+
+
+def test_task_sensor_with_task_id_decorator_counted_once():
+    src = """
+@task.sensor(task_id="wait_x", poke_interval=30)
+def first():
+    return done("dag_a")
+
+@task.sensor(task_id="wait_y")
+def second():
+    return done("dag_b")
+"""
+    assert parse_source(src, "grp.wait_x", KNOWN, "waiter") == ["dag_a"]
+    assert parse_source(src, "grp.wait_y", KNOWN, "waiter") == ["dag_b"]
