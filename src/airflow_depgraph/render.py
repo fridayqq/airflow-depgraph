@@ -53,6 +53,7 @@ def build_view(snap: Snapshot, s: Settings, status_override: dict | None = None)
         paused = bool(cat["is_paused"] if cat and "is_paused" in cat else info.get("is_paused"))
         node["paused"] = paused
         node["tags"] = list((cat or {}).get("tags") or [])
+        node["schedule"] = (cat or {}).get("schedule") or info.get("schedule")
         run = info.get("last_run") or {}
         if dag_id in override:
             node["fail"] = dict(override[dag_id])
