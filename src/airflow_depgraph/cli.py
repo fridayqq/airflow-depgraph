@@ -397,7 +397,7 @@ def _parser() -> argparse.ArgumentParser:
             description="Fetch the dependency graph from Airflow and save it as a snapshot JSON "
                         "file. downstream, upstream, render and tasks can then work offline.",
             examples=["airflow-depgraph fetch --url https://airflow.example.com -o graph.json",
-                      "airflow-depgraph fetch --preset work --with-status --infer-sensors"])
+                      "airflow-depgraph fetch --preset prod --with-status --infer-sensors"])
     f.add_argument("-o", "--output", default=DEFAULT_SNAPSHOT,
                    help=f"snapshot file to write (default {DEFAULT_SNAPSHOT})")
     f.set_defaults(func=cmd_fetch)
@@ -417,7 +417,7 @@ def _parser() -> argparse.ArgumentParser:
             help="fetch live and write an HTML page plus its JSON snapshot",
             description="Fetch the graph from Airflow and write an HTML page. The JSON snapshot "
                         "goes next to it with a .json suffix.",
-            examples=["airflow-depgraph graph --preset work -o graph.html",
+            examples=["airflow-depgraph graph --preset prod -o graph.html",
                       "airflow-depgraph graph --url https://airflow.example.com --with-status"])
     g.add_argument("-o", "--output", default=DEFAULT_HTML,
                    help="HTML file to write; the snapshot goes next to it with a .json suffix "
@@ -425,13 +425,12 @@ def _parser() -> argparse.ArgumentParser:
     g.set_defaults(func=cmd_graph)
 
     for name in ("downstream", "upstream"):
-        what = "waits for" if name == "upstream" else "is triggered or waited on by"
+        meaning = "what depends on it" if name == "downstream" else "what it waits for"
         q = add(name, parents=[common], help=f"list {name} DAGs",
-                description=f"List the DAGs that {name} of DAG, up to --depth hops: the DAGs "
-                            f"this DAG {what}. Reads a snapshot file if given, otherwise "
-                            "queries Airflow live.",
+                description=f"List the DAGs {name} of DAG ({meaning}), up to --depth hops. "
+                            "Reads a snapshot file if given, otherwise queries Airflow live.",
                 examples=[f"airflow-depgraph {name} dag_a graph.json",
-                          f"airflow-depgraph {name} dag_a --depth 2 --json --preset work"])
+                          f"airflow-depgraph {name} dag_a --depth 2 --json --preset prod"])
         q.add_argument("dag", help="DAG id, with or without the dag: prefix")
         q.add_argument("snapshot", nargs="?", help="snapshot file; omit to query live")
         q.add_argument("--depth", type=_depth, default=5, help="maximum DAG hops, at least 1 (default 5)")
@@ -450,7 +449,7 @@ def _parser() -> argparse.ArgumentParser:
             description="Print the task ids of one DAG, from a snapshot made with --with-tasks "
                         "or live from Airflow.",
             examples=["airflow-depgraph tasks dag_a graph.json --regex refresh",
-                      "airflow-depgraph tasks dag_a --json --preset work"])
+                      "airflow-depgraph tasks dag_a --json --preset prod"])
     t.add_argument("dag", help="DAG id, with or without the dag: prefix")
     t.add_argument("snapshot", nargs="?", help="snapshot file; omit to query live")
     t.add_argument("--regex", help="keep only task ids matching this regex")
@@ -461,7 +460,7 @@ def _parser() -> argparse.ArgumentParser:
              description="List the presets found in the preset directories. With --preset, also "
                          "show its resolved settings; the token is never shown.",
              examples=["airflow-depgraph presets",
-                       "airflow-depgraph presets --preset work",
+                       "airflow-depgraph presets --preset prod",
                        "airflow-depgraph presets --example"])
     pr.add_argument("--example", action="store_true", help="print the example preset")
     pr.set_defaults(func=cmd_presets)
