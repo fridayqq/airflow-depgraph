@@ -20,13 +20,24 @@ escaping.
    Needs Python ≥ 3.11. Airflow 2 is not supported.
 2. **Connection.** Run `airflow-depgraph presets`. A listed preset is only right if its URL is
    the user's Airflow: check with `airflow-depgraph presets --preset NAME` (prints the resolved
-   settings) before using it. Without a matching preset you need the base URL and a user name:
+   settings) before using it. For a one-off without a preset you need the base URL and a user name:
    `airflow-depgraph fetch --url https://airflow.example.com --user viewer --with-status -o deps.json`
    (password from `AIRFLOW_DEPGRAPH_PASSWORD` or `--password-stdin`; there is no `--password`
-   flag). Never write the password into a command, file, preset or chat reply. If the user will
-   query this Airflow again, offer a preset: `airflow-depgraph presets --example` →
-   `~/.config/airflow-depgraph/presets/<name>.toml` with `url`, `user_env`, `password_env` (or
-   `password_cmd` for a keychain / password-manager command). `--preset` also takes a path.
+   flag). Never write the password into a command, file, preset or chat reply.
+   **No matching preset and the user will come back to this Airflow:** build one with them.
+   a. Ask for the URL and which env var or command holds the user and the password (never the
+      password itself). If those variables are not set in Claude's shell, tell the user to add
+      `export` lines to their shell profile, or to use `password_cmd`, then re-run.
+   b. `airflow-depgraph init --discover --json --url U` (add `--user-env`, `--password-env` or
+      `--password-cmd` for non-default names). It reads only, and prints tags with DAG counts,
+      asset prefixes, sensor nodes and suggestions.
+   c. Ask with AskUserQuestion, options from the JSON: tags (multiSelect, top 4 by count plus
+      "none"; Other to type), asset prefix (top candidates plus "keep labels"), status rings
+      (recommended per `suggest.with_status`), sensor inference.
+   d. `airflow-depgraph init NAME --yes --url U --tag team-a --strip-prefix 's3://bucket/'
+      --with-status …` (same credential flags as in b).
+   e. Verify with `airflow-depgraph presets --preset NAME`.
+   The user can also run `airflow-depgraph init` in their own terminal. `--preset` also takes a path.
 3. **Snapshot.** `airflow-depgraph fetch --preset NAME --with-status -o deps.json`
    (`--url U --user X` instead of `--preset`). Add `--with-tasks` when the question is about
    tasks (report refreshes). Add `--infer-sensors` to recover dependencies Airflow does not

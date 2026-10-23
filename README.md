@@ -120,16 +120,19 @@ invoked as `/airflow-depgraph`.
 URL each time:
 
 ```bash
-mkdir -p ~/.config/airflow-depgraph/presets
-airflow-depgraph presets --example > ~/.config/airflow-depgraph/presets/prod.toml
-# edit url, user_env, password_env (or password_cmd), then export those variables in your shell
-airflow-depgraph presets --preset prod   # check the resolved settings
+airflow-depgraph init                    # asks a few questions, writes ~/.config/airflow-depgraph/presets/prod.toml
+# export the user and password variables it names, then check the result:
+airflow-depgraph presets --preset prod
 ```
+
+To write the file by hand instead, start from `airflow-depgraph presets --example` (see [Presets](#presets)).
 
 Then ask Claude, for example: "use the prod preset and show me everything downstream of
 `orders_load`, then open the graph".
 
 ## Quick start
+
+New to this? Run `airflow-depgraph init` first: it creates a preset for your Airflow by asking questions (see [Create a preset](#create-a-preset)).
 
 ```bash
 export AIRFLOW_DEPGRAPH_URL=https://airflow.example.com
@@ -187,6 +190,91 @@ The user comes from `--user` or the variable named by `user_env` (`AIRFLOW_DEPGR
 | 5 | DAG not in the dependency graph |
 | 130 | Interrupted |
 
+## Create a preset
+
+`airflow-depgraph init [NAME]` writes `NAME.toml` by asking questions in the terminal. Every answer is checked against your Airflow, which also proposes tags, an asset prefix to strip and the optional settings. Nothing is written until you confirm at the end, and the password is never asked for as a stored value: you name an environment variable or a command that prints it.
+
+```text
+$ airflow-depgraph init
+airflow-depgraph init — new preset
+Ctrl-C to quit, nothing is written until the end.
+
+[1/7] Name
+Preset name [prod]:
+
+[2/7] Airflow URL
+Airflow URL, e.g. https://airflow.example.com: https://airflow.example.com
+✓ Airflow is reachable (scheduler healthy)
+
+[3/7] User
+Environment variable that holds the user name [AIRFLOW_DEPGRAPH_USER]:
+not set in this shell
+
+[4/7] Password source
+  1) environment variable
+  2) command (pass, Keychain, 1Password…)
+Where does the password come from? [1]:
+Environment variable that holds the password [AIRFLOW_DEPGRAPH_PASSWORD]:
+not set in this shell
+
+[5/7] Sign-in check
+No password variable or command is available: you will be asked once; it is used for this check only and discarded.
+User name (for this check only, not stored): alice
+Airflow password:
+✓ signed in as alice — Airflow 3.3.2
+
+[6/7] Choices
+✓ 584 DAGs (431 active, 153 paused), 210 assets, 12 sensor nodes
+Tags (the page shows only DAGs with these tags):
+  1) team-a  (116)
+  2) team-b  (74)
+Numbers and/or names, comma-separated, - for none [-]: 1
+...
+
+[7/7] Advanced
+Change advanced settings? [y/N]:
+
+This is the file that will be written (/home/alice/.config/airflow-depgraph/presets/prod.toml):
+...
+Write it? [Y/n]:
+✓ wrote ~/.config/airflow-depgraph/presets/prod.toml
+
+Next:
+  export AIRFLOW_DEPGRAPH_USER=…
+  export AIRFLOW_DEPGRAPH_PASSWORD=…
+  airflow-depgraph presets --preset prod
+  airflow-depgraph graph --preset prod -o graph.html
+```
+
+If the sign-in fails you can retry, skip the checks (the questions then come without suggestions) or quit. Ctrl-C or Ctrl-D at any point stops with exit code 130 and writes nothing. An existing preset is only replaced after you confirm, or with `--force`. The file goes to `--dir`, else `$AIRFLOW_DEPGRAPH_PRESETS`, else `~/.config/airflow-depgraph/presets`.
+
+**Without a terminal.** `--yes` asks nothing and takes every value from flags; a missing NAME or `--url` is a usage error (exit 2). The sign-in check still runs unless you pass `--no-check`, and a failure writes nothing (exit 3 for credentials, 4 for an unreachable Airflow). Credentials come from the usual places (`--password-stdin`, the password variable, `password_cmd`); `--user` is used for the check only and never written.
+
+```bash
+airflow-depgraph init prod --yes --url https://airflow.example.com \
+  --tag team-a --strip-prefix 's3://bucket/' --with-status \
+  --user-env MY_AIRFLOW_USER --password-cmd 'pass show airflow/prod'
+```
+
+Flags: `--user-env`, `--password-env`, `--password-cmd`, `--tag` (repeatable), `--strip-prefix`, `--highlight`, `--highlight-label`, `--title`, `--with-status`/`--no-status`, `--infer-sensors`/`--no-infer-sensors`, `--tests-task-regex`, `--task-query-regex`, `--lookback`, `--timeout`, `--workers`. Without `--yes` they answer the matching question, which is then not asked.
+
+**Discovery.** `--discover` reads from Airflow and writes nothing; with `--json` the output is meant for scripts and for the Claude Code skill, which builds its menus from it:
+
+```bash
+airflow-depgraph init --discover --json --url https://airflow.example.com
+```
+
+```json
+{"url": "https://airflow.example.com", "airflow_version": "3.3.2", "scheduler": "healthy",
+ "dags": {"total": 584, "active": 431, "paused": 153},
+ "tags": [{"name": "team-a", "dags": 116}],
+ "assets": 210, "asset_prefixes": [{"prefix": "s3://bucket/", "assets": 40}],
+ "sensor_nodes": 12,
+ "suggest": {"with_status": true, "infer_sensors": false}}
+```
+
+`tags` lists every tag by DAG count. `dags` counts the DAGs that are not stale.
+
 ## Presets
 
 A preset is a TOML file of defaults for one Airflow instance. Credentials are never stored in it, only the names of environment variables or a command.
@@ -202,6 +290,7 @@ A preset name is looked up in these directories, in order:
 `--preset` also accepts a path to a `.toml` file. `--preset none` ignores any preset, including one set through `AIRFLOW_DEPGRAPH_PRESET`. `airflow-depgraph presets` lists what is found.
 
 ```bash
+airflow-depgraph init prod       # or write it by hand:
 mkdir -p ~/.config/airflow-depgraph/presets
 airflow-depgraph presets --example > ~/.config/airflow-depgraph/presets/prod.toml
 # edit prod.toml, then:
