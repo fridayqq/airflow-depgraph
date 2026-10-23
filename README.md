@@ -10,7 +10,7 @@ Things to know before you use it:
 
 - **Airflow 3 only.** Airflow 2 has no `/ui/dependencies` endpoint, so it is not supported.
 - **Internal endpoint.** `/ui/dependencies` belongs to the Airflow UI, not the public API. It may change between releases. For example, 3.1.8 started filtering it by DAG permissions. The tool was developed against Airflow 3.3.2.
-- **Pure cron DAGs are absent.** A DAG with no asset, trigger or sensor link has no edges, so it does not appear in the graph.
+- **Pure cron DAGs have no edges.** A DAG with no asset, trigger or sensor link is not part of `/ui/dependencies`. It is taken from the DAG catalog instead: the page lists it under *DAGs without dependencies*, and `report unlinked` prints it.
 
 ## What the graph contains
 
@@ -50,6 +50,7 @@ Tested on Airflow 3.1.5 and 3.3.2, at the root and under a sub-path such as `/ai
   memory per session token for five minutes (at most 64 pages); permission changes show up
   after that.
 - **Load.** Each api-server process builds at most three pages at once; when more than six more are queued, the page answers 503 with `Retry-After: 30` instead of waiting.
+- **Headers.** Every response carries a `Content-Security-Policy`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: same-origin`.
 - **Inferred sensor links.** Off by default. With `AIRFLOW_DEPGRAPH_INFER_SENSORS=true` a
   background refresh adds them; see [Sensor dependencies (inferred)](#sensor-dependencies-inferred).
 - **Settings.** The same `AIRFLOW_DEPGRAPH_*` variables as the CLI (`..._HIGHLIGHT`,
@@ -152,7 +153,7 @@ airflow-depgraph downstream my_dag --tasks-matching 'refresh|report' deps.json
 airflow-depgraph downstream my_dag --tasks-preset deps.json
 ```
 
-`upstream` works the same way. `--depth N` must be at least 1. `tasks <dag> [snapshot]` lists the tasks of a DAG. If you omit the snapshot argument, `downstream`, `upstream` and `tasks` query the live instance. `--depth N` limits the traversal and `--json` prints machine-readable output.
+`upstream` works the same way. Each row shows the hop, the DAG, the link it came through (`via`), the DAG it was reached from and, with status in the snapshot, the last decisive run; `--tree` prints the result as an indented tree instead. `--depth N` must be at least 1. `tasks <dag> [snapshot]` lists the tasks of a DAG. If you omit the snapshot argument, `downstream`, `upstream` and `tasks` query the live instance. `--depth N` limits the traversal and `--json` prints machine-readable output.
 
 Other options worth knowing:
 
@@ -255,11 +256,14 @@ The page is a single HTML file with d3 inlined, so it works offline.
 
 - **Layout.** Node size grows with the number of transitive downstream DAGs. The shape shows the node type: DAG, asset, trigger or sensor.
 - **Status.** With `--with-status`, a red ring marks a pipeline failure and an amber ring marks a failure that is tests only. Paused failing DAGs get no ring. A DAG with no decisive run in the lookback has no status. Dark mode follows the system setting.
-- **Click.** Selecting a node highlights its upstream and downstream chain and fills the side lists.
+- **Click.** Selecting a node highlights its upstream and downstream chain. The side panel lists both directions grouped by hop, each row with the link it came through, and a *Copy* button copies a list as plain text. Double-click pins or releases a node.
+- **Fit.** The view zooms to the shown nodes after loading and after a filter change; the *Fit* button does it on demand. Labels stay the same size on screen: the focused nodes are always labelled, the rest appear as you zoom in.
+- **Blast radius.** With *blast radius* on and nothing selected, the side panel lists the failing DAGs that pass the filters, the ones with the most downstream DAGs first.
+- **Header.** The number of DAGs shown out of the total, and the snapshot age.
 - **Search.** Type a DAG name to focus it. `+dag` adds everything upstream, `dag+` everything downstream, and `2+dag+3` limits that to 2 levels up and 3 down.
-- **Toggles.** Hide assets, show only failing DAGs, and highlight the DAGs matched by the preset `highlight` regex.
-- **Filters.** Three filters are on by default. *only linked DAGs* hides DAGs that have no asset, trigger or sensor link to another DAG; switched off, those DAGs appear in a grid below the graph. *only active DAGs* hides paused DAGs. *only tags: …* keeps the DAGs that carry any of the configured `tags`; it is shown only when tags are configured. *+ linked DAGs of other teams* (off by default) also keeps DAGs of other tags that are one edge or one asset, trigger or sensor away from a kept DAG. Assets, triggers and sensors stay only while they still join kept nodes. *only failing* applies after these filters. The header shows how many DAGs are on screen out of the total. These filters need the DAG catalog (see the snapshot format); stale DAGs are never shown.
-- **Hash flags.** The page writes its state to the URL fragment as you type or toggle, so a view can be shared: `#q=<text>,onlyFail,hideAssets,hl,allLinks,paused,allTags,conn,guards`. Filters that are on by default appear as their negation: `allLinks` shows unlinked DAGs, `paused` shows paused DAGs, `allTags` switches the tag filter off, `conn` switches on *+ linked DAGs of other teams*, and `guards` shows inferred deploy guards. The search text is URL-encoded. Opening a page with such a fragment restores the view.
+- **Toggles.** Hide assets, show only failing DAGs, and highlight the DAGs matched by the preset `highlight` regex. On a phone the toggles and filters fold into a *Filters* button.
+- **Filters.** Three filters are on by default. *only linked DAGs* hides DAGs that have no asset, trigger or sensor link to another DAG; switched off, those DAGs appear in a grid below the graph and in a searchable *DAGs without dependencies* list in the side panel. *only active DAGs* hides paused DAGs. *only tags: …* keeps the DAGs that carry any of the configured `tags`; it is shown only when tags are configured. *+ linked DAGs of other teams* (off by default) also keeps DAGs of other tags that are one edge or one asset, trigger or sensor away from a kept DAG. Assets, triggers and sensors stay only while they still join kept nodes. *only failing* applies after these filters. The header shows how many DAGs are on screen out of the total. These filters need the DAG catalog (see the snapshot format); stale DAGs are never shown.
+- **Hash flags.** The page writes its state to the URL fragment as you type or toggle, so a view can be shared: `#q=<text>,onlyFail,hideAssets,hl,allLinks,paused,allTags,conn,guards,blast,sel=<node id>`. Filters that are on by default appear as their negation: `allLinks` shows unlinked DAGs, `paused` shows paused DAGs, `allTags` switches the tag filter off, `conn` switches on *+ linked DAGs of other teams*, and `guards` shows inferred deploy guards. `blast` turns on blast radius and `sel=dag:my_dag` selects that node. The search text and node id are URL-encoded. Opening a page with such a fragment restores the view.
 
 The text queries `downstream` and `upstream` are not filtered by tags or paused state.
 
@@ -416,8 +420,12 @@ Snapshots are JSON, format 1:
 ## Development
 
 ```bash
-uv run pytest
+uv run pytest                     # Python tests; the page's JS tests run from here too when node is installed
+uv run ruff check .
+node --test tests/js/*.test.mjs   # graph-core.js only (list the files: older node does not expand a directory)
 ```
+
+`tests/contract/` runs against a live Airflow 3. `bash tests/contract/start_standalone.sh` starts `airflow standalone` with the DAGs in `tests/contract/dags`; then set `DEPGRAPH_CONTRACT_URL` plus `DEPGRAPH_CONTRACT_USER` and `DEPGRAPH_CONTRACT_PASSWORD` (or `DEPGRAPH_CONTRACT_TOKEN`) and run `uv run pytest tests/contract`. CI does the same nightly against the latest Airflow 3.
 
 The diagrams in this README are drawn with Excalidraw. Sources live in `docs/diagrams/*.excalidraw`; re-export the PNG/SVG files in `docs/images/` after editing them.
 
