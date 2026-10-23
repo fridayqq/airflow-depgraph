@@ -15,6 +15,12 @@ class ApiError(RuntimeError):
         self.path = path
 
 
+def _ti_key(ti: dict) -> tuple:
+    """Mapped tasks share a task_id; map_index tells their instances apart."""
+    map_index = ti.get("map_index")
+    return ti.get("task_id"), -1 if map_index is None else map_index
+
+
 class AirflowClient:
     def __init__(self, url: str, token: str | None = None, timeout: float = 25,
                  opener=urllib.request.urlopen):
@@ -130,10 +136,10 @@ class AirflowClient:
                 query["state"] = state
             data = self.get(path, **query)
             page = data.get("task_instances") or []
-            fresh = [ti for ti in page if ti.get("task_id") not in seen]
+            fresh = [ti for ti in page if _ti_key(ti) not in seen]
             if not page or not fresh:
                 return out
-            seen.update(ti.get("task_id") for ti in fresh)
+            seen.update(_ti_key(ti) for ti in fresh)
             out.extend(fresh)
             offset += len(page)
             total = data.get("total_entries")

@@ -187,3 +187,20 @@ def test_task_instances_stops_when_page_repeats_without_total():
     out = AirflowClient(URL, "t", opener=opener).task_instances("d", "r")
     assert len(calls) == 2
     assert len(out) == 100
+
+
+def test_task_instances_keeps_mapped_instances_sharing_one_task_id():
+    import urllib.parse
+    from tests.conftest import _Resp
+    all_items = [{"task_id": "mapped", "map_index": i} for i in range(150)]
+    calls = []
+
+    def opener(req, timeout=None):
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(req.full_url).query)
+        offset, limit = int(q["offset"][0]), int(q["limit"][0])
+        calls.append(offset)
+        return _Resp(json.dumps({"task_instances": all_items[offset:offset + limit]}).encode())
+
+    out = AirflowClient(URL, "t", opener=opener).task_instances("d", "r")
+    assert len(out) == 150
+    assert calls == [0, 100, 150]
