@@ -11,6 +11,9 @@ All notable changes to this project are documented here. The format follows
 - `init` command: creates a preset by questionnaire, checking each answer against the live Airflow (health, sign-in) and proposing tags, an asset prefix and settings from what it finds. `--yes` with flags is the scriptable form; `--discover` (with `--json`) only reads and reports.
 - `AirflowClient.health()`, a call to `/api/v2/monitor/health`.
 
+### Changed
+- An empty `password_env` (`password_env = ""`) skips the environment and reads the password from `password_cmd` only; `init` writes it when the password comes from a command.
+
 ## [0.4.0] - 2026-10-23
 
 ### Breaking
