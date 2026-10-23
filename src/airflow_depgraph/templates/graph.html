@@ -52,6 +52,7 @@ aside li { margin: 2px 0; cursor: pointer; word-break: break-all; }
 aside li:hover { color: var(--acc); }
 aside .hint { color: var(--mut); }
 aside button { font: inherit; margin-top: 6px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--acc); cursor: pointer; }
+header button { font: inherit; padding: 2px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--acc); cursor: pointer; }
 aside a { color: var(--acc); }
 .legend { display: flex; gap: 14px; flex-wrap: wrap; color: var(--mut); }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
@@ -93,6 +94,7 @@ text.lbl {
   <span class="st" id="shown"></span>
   <span class="st" id="ver" hidden></span>
   <input id="q" type="search" placeholder="find a DAG or asset… (+dag, dag+, 2+dag+3)" autocomplete="off" aria-label="Search">
+  <button type="button" id="fit" title="Zoom to fit all shown nodes">Fit</button>
   <label class="t"><input type="checkbox" id="hideAssets"> DAG→DAG (hide assets)</label>
   <label class="t"><input type="checkbox" id="onlyFail"> only failing + their chain</label>
   <label class="t"><input type="checkbox" id="onlyLinked" checked> only linked DAGs</label>
@@ -168,13 +170,14 @@ const chain = id => new Set([...reach([id], outM, Infinity), ...reach([id], inM,
 
 const svg = d3.select('#g'), W = () => svg.node().clientWidth, H = () => svg.node().clientHeight;
 const root = svg.append('g');
-const zoom = d3.zoom().scaleExtent([0.15, 6]).on('zoom', ev => { root.attr('transform', ev.transform); if (nodes.length) updateShown(); });
+const zoom = d3.zoom().scaleExtent([0.15, 6]).on('zoom', ev => { root.attr('transform', ev.transform); if (nodes.length) updateShown(); updateLabels(); });
 svg.call(zoom);
 const tip = document.getElementById('tip'), side = document.getElementById('side'), qEl = document.getElementById('q');
 const box = id => document.getElementById(id);
 buildAdj();
 let nodes = [], links = [], nodeMap = new Map(), sim = null;
 let selectedId = null, searchKeep = null, lastTargets = [];
+let focusKeep = null, pendingFit = false;  // focusKeep: nodes of the current selection or search; pendingFit: fit once the layout settles
 
 function r(n) { return n.type === 'dag' ? 4 + Math.sqrt(n.down) * 2.2 : 3.5; }
 const failing = n => n.fail && !n.fail.paused;
@@ -256,6 +259,7 @@ function buildView() {
     prev.has(id) && !loose(byId.get(id)) ? {x: prev.get(id).x, y: prev.get(id).y} : {}));
   nodeMap = new Map(nodes.map(n => [n.id, n]));
   links = es.map(e => ({source: e.s, target: e.t, via: e.via, inf: e.inf, guard: e.guard}));
+  pendingFit = true;  // a filter toggle refits once the layout settles (search does not come here)
   draw();
   updateShown();
 }
@@ -302,7 +306,6 @@ function draw() {
     if (d.paused) g.select('circle,rect,path').attr('fill-opacity', .5);
     if (failing(d)) g.append('circle').attr('r', R + 3).attr('fill', 'none')
       .attr('stroke', d.fail.kind === 'tests' ? css('--warning') : css('--critical')).attr('stroke-width', 2.5);
-    if (d.type === 'dag' && (SMALL || d.down >= 5 || failing(d))) g.append('text').attr('class', 'lbl').attr('dy', R + 10).attr('text-anchor', 'middle').text(d.label);
   });
   node.on('mouseenter', (ev, d) => { tip.style.display = 'block'; tip.innerHTML = `<b>${esc(d.label)}</b> ` + facts(d); })
     .on('mousemove', ev => { tip.style.left = (ev.clientX + 14) + 'px'; tip.style.top = (ev.clientY + 14) + 'px'; })
@@ -311,6 +314,9 @@ function draw() {
     .on('dblclick', (ev, d) => { d.pinned = !d.pinned; if (!d.pinned) { d.fx = null; d.fy = null; } ev.stopPropagation(); });
   const grid = nodes.filter(n => n.unlinked);
   placeUnlinked(grid);
+  // Labels sit in their own layer above all nodes; updateLabels() decides which are shown.
+  const lbl = root.append('g').attr('class', 'labels').selectAll('text').data(nodes, d => d.id).join('text')
+    .attr('class', 'lbl').attr('text-anchor', 'middle').attr('display', 'none').text(d => d.label);
   sim = d3.forceSimulation(nodes.filter(n => !n.unlinked))
     .force('link', d3.forceLink(links).id(d => d.id).distance(40).strength(.6))
     .force('charge', d3.forceManyBody().strength(-120))
@@ -322,9 +328,30 @@ function draw() {
         d3.select(this).attr('x1', l.source.x).attr('y1', l.source.y).attr('x2', l.target.x - dx * k).attr('y2', l.target.y - dy * k);
       });
       node.attr('transform', d => `translate(${d.x},${d.y})`);
+      placeLabels(lbl);
+    })
+    .on('end', () => {  // first layout settled: fit to what is shown (not when a search picked the view)
+      if (!pendingFit) return;
+      pendingFit = false;
+      fitTo(lastTargets.length ? lastTargets : nodes.map(n => n.id));
     });
   node.filter(d => d.unlinked).attr('transform', d => `translate(${d.x},${d.y})`);
+  placeLabels(lbl);
   applyHighlight();
+}
+
+// A label sits under its node.
+function placeLabels(sel) { sel.attr('transform', d => `translate(${d.x},${d.y + r(d) + 10})`); }
+
+// Labels shown: the selected node, the focus set, DAGs as before (small graph, hubs, failing) and every DAG from ZOOM_LABELS.
+const ZOOM_LABELS = 1.8;
+function updateLabels() {
+  const k = d3.zoomTransform(svg.node()).k;
+  root.selectAll('g.labels text.lbl').attr('display', d => {
+    const inFocus = d.id === selectedId || (focusKeep && focusKeep.has(d.id));
+    const dag = d.type === 'dag' && (SMALL || d.down >= 5 || failing(d) || k >= ZOOM_LABELS);
+    return inFocus || dag ? null : 'none';
+  });
 }
 
 function facts(d) {
@@ -411,12 +438,14 @@ function select(id) {
 function applyHighlight() {
   const hl = box('hl').checked;
   const keep = searchKeep || (selectedId ? chain(selectedId) : null);
+  focusKeep = keep;
   const lit = d => hl && d.hl;
   const outline = d => d.inferred ? css(d.kind === 'guard' ? '--guard' : '--c-sensor') : null;
   root.selectAll('g.n').style('opacity', d => (keep && !keep.has(d.id)) ? .12 : 1)
     .each(function (d) { d3.select(this).select('circle,rect,path').attr('stroke', lit(d) ? css('--fg') : outline(d)).attr('stroke-width', lit(d) ? 2 : (d.inferred ? 1.5 : null)); });
   root.selectAll('line').style('opacity', l => keep ? ((keep.has(l.source.id) && keep.has(l.target.id)) ? .9 : .05) : .6)
     .attr('stroke', l => keep && keep.has(l.source.id) && keep.has(l.target.id) ? css('--acc') : css(l.guard ? '--guard' : '--edge'));
+  updateLabels();
 }
 
 function fitTo(ids) {
@@ -485,6 +514,7 @@ qEl.addEventListener('input', () => { runSearch(true); syncHash(); });
 // Switching "only linked" off adds the grid below the graph: zoom out so it is in view.
 box('onlyLinked').addEventListener('change', () => { if (!box('onlyLinked').checked) setTimeout(() => fitTo([...nodeMap.keys()]), 900); });
 box('hl').addEventListener('change', () => { applyHighlight(); syncHash(); });
+box('fit').addEventListener('click', () => fitTo(nodes.map(n => n.id)));
 box('showGuards').addEventListener('change', () => { buildAdj(); buildView(); if (selectedId) renderSide(byId.get(selectedId)); syncHash(); });
 svg.on('click', ev => { if (ev.target === svg.node()) { selectedId = null; searchKeep = null; renderSide(null); applyHighlight(); } });
 if (window.matchMedia) {
