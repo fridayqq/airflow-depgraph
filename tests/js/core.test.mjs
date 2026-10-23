@@ -1,0 +1,123 @@
+// Tests for the page's pure helpers (src/airflow_depgraph/templates/graph-core.js). Run: node --test tests/js
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const core = require('../../src/airflow_depgraph/templates/graph-core.js');
+const SEARCH_RE = /^(?:(\d*)\+)?(.+?)(?:\+(\d*))?$/;   // the page's search pattern (render.SEARCH_PATTERN)
+
+test('parseQuery: upstream, downstream, depth and plain text', () => {
+  assert.deepEqual(core.parseQuery('+dag_2', SEARCH_RE),
+    {text: 'dag_2', plus: true, up: true, upDepth: Infinity, down: false, downDepth: Infinity});
+  assert.deepEqual(core.parseQuery('12_hourly+', SEARCH_RE),
+    {text: '12_hourly', plus: true, up: false, upDepth: Infinity, down: true, downDepth: Infinity});
+  assert.deepEqual(core.parseQuery('2+dag+3', SEARCH_RE),
+    {text: 'dag', plus: true, up: true, upDepth: 2, down: true, downDepth: 3});
+  assert.deepEqual(core.parseQuery('dag', SEARCH_RE), {text: 'dag', plus: false});
+  assert.equal(core.parseQuery('   ', SEARCH_RE), null);
+});
+
+// a -> b -> c -> d through DAG nodes, with an asset between a and b (a hop through it is free).
+const nodes = [
+  {id: 'dag:a', type: 'dag'}, {id: 'dag:b', type: 'dag'}, {id: 'dag:c', type: 'dag'}, {id: 'dag:d', type: 'dag'},
+  {id: 'asset:x', type: 'asset', label: 'x'},
+];
+const byId = new Map(nodes.map(n => [n.id, n]));
+
+test('reach respects the depth in DAG hops; links in between are free', () => {
+  const adj = new Map([['dag:a', ['asset:x']], ['asset:x', ['dag:b']], ['dag:b', ['dag:c']], ['dag:c', ['dag:d']]]);
+  assert.deepEqual([...core.reach(['dag:a'], adj, 1, byId)].sort(), ['asset:x', 'dag:a', 'dag:b']);
+  assert.deepEqual([...core.reach(['dag:a'], adj, 2, byId)].sort(), ['asset:x', 'dag:a', 'dag:b', 'dag:c']);
+  assert.equal(core.reach(['dag:a'], adj, Infinity, byId).size, 5);
+});
+
+// d1 -> asset a1 -> d3 ; d2 -> asset a2 -> d3 ; d4 is unlinked.
+const view = {
+  nodes: [
+    {id: 'dag:d1', type: 'dag', tags: ['t'], paused: false},
+    {id: 'dag:d2', type: 'dag', tags: [], paused: true},
+    {id: 'dag:d3', type: 'dag', tags: ['t'], paused: false},
+    {id: 'dag:d4', type: 'dag', tags: ['t'], paused: false, unlinked: true},
+    {id: 'asset:a1', type: 'asset', label: 'a1'},
+    {id: 'asset:a2', type: 'asset', label: 'a2'},
+  ],
+  edges: [
+    {s: 'dag:d1', t: 'asset:a1', guard: false}, {s: 'asset:a1', t: 'dag:d3', guard: false},
+    {s: 'dag:d2', t: 'asset:a2', guard: false}, {s: 'asset:a2', t: 'dag:d3', guard: false},
+  ],
+  byId: new Map([
+    ['dag:d1', {id: 'dag:d1', type: 'dag', tags: ['t'], paused: false}],
+    ['dag:d2', {id: 'dag:d2', type: 'dag', tags: [], paused: true}],
+    ['dag:d3', {id: 'dag:d3', type: 'dag', tags: ['t'], paused: false}],
+    ['dag:d4', {id: 'dag:d4', type: 'dag', tags: ['t'], paused: false, unlinked: true}],
+    ['asset:a1', {id: 'asset:a1', type: 'asset', label: 'a1'}],
+    ['asset:a2', {id: 'asset:a2', type: 'asset', label: 'a2'}],
+  ]),
+  tags: ['t'],
+};
+const off = {onlyTags: false, onlyActive: false, conn: false, showGuards: false, blast: false, onlyFail: false};
+const kept = (state) => [...core.filterView(view, {...off, ...state}).keep].sort();
+
+test('filterView: no filters keeps every linked DAG and both links', () => {
+  assert.deepEqual(kept({}), ['asset:a1', 'asset:a2', 'dag:d1', 'dag:d2', 'dag:d3']);
+});
+
+test('filterView: tag filter drops untagged DAGs and the links left with one neighbour', () => {
+  assert.deepEqual(kept({onlyTags: true}), ['asset:a1', 'dag:d1', 'dag:d3']);
+});
+
+test('filterView: active filter drops paused DAGs', () => {
+  assert.deepEqual(kept({onlyActive: true}), ['asset:a1', 'dag:d1', 'dag:d3']);
+});
+
+test('filterView: tags and active together', () => {
+  assert.deepEqual(kept({onlyTags: true, onlyActive: true}), ['asset:a1', 'dag:d1', 'dag:d3']);
+});
+
+test('filterView: connected brings back neighbours that pass the filters', () => {
+  assert.deepEqual(kept({onlyTags: true, conn: true}), ['asset:a1', 'asset:a2', 'dag:d1', 'dag:d2', 'dag:d3']);
+});
+
+test('filterView: returns the edges between kept nodes only', () => {
+  const edges = core.filterView(view, {...off, onlyTags: true}).edges;
+  assert.deepEqual(edges.map(e => `${e.s}>${e.t}`).sort(), ['asset:a1>dag:d3', 'dag:d1>asset:a1']);
+});
+
+// d1 -> a1 -> a2 -> d3 (two link nodes), and a direct d1 -> d4.
+test('collapseLinks: two link nodes collapse to one DAG edge, direct DAG edges stay', () => {
+  const b = new Map([
+    ['dag:d1', {id: 'dag:d1', type: 'dag'}], ['dag:d3', {id: 'dag:d3', type: 'dag'}],
+    ['dag:d4', {id: 'dag:d4', type: 'dag'}],
+    ['asset:a1', {id: 'asset:a1', type: 'asset', label: 'a1'}],
+    ['asset:a2', {id: 'asset:a2', type: 'asset', label: 'a2', inferred: true}],
+  ]);
+  const edges = [
+    {s: 'dag:d1', t: 'asset:a1'}, {s: 'asset:a1', t: 'asset:a2'}, {s: 'asset:a2', t: 'dag:d3'},
+    {s: 'dag:d1', t: 'dag:d4'},
+  ];
+  const out = core.collapseLinks(['dag:d1', 'dag:d3', 'dag:d4', 'asset:a1', 'asset:a2'], edges, b);
+  assert.deepEqual(out.keep.sort(), ['dag:d1', 'dag:d3', 'dag:d4']);
+  const via = e => `${e.s}>${e.t} via ${e.via} inf=${e.inf}`;
+  assert.deepEqual(out.edges.map(via).sort(), ['dag:d1>dag:d3 via a2 inf=true', 'dag:d1>dag:d4 via null inf=false']);
+});
+
+test('encodeHash and decodeHash round-trip', () => {
+  const state = {q: 'dag_a+', flags: ['onlyFail', 'hl', 'allLinks', 'conn'], sel: 'dag:x y'};
+  const str = core.encodeHash(state);
+  assert.equal(str, 'q=dag_a%2B,onlyFail,hl,allLinks,conn,sel=dag%3Ax%20y');
+  assert.deepEqual(core.decodeHash('#' + str), {q: 'dag_a+', flags: ['onlyFail', 'hl', 'allLinks', 'conn'], sel: 'dag:x y'});
+  assert.equal(core.encodeHash(core.decodeHash('#' + str)), str);
+  assert.equal(core.encodeHash({q: '', flags: [], sel: null}), '');
+});
+
+test('decodeHash keeps a broken value raw and reads no flags from an empty hash', () => {
+  assert.equal(core.decodeHash('#q=bad%ZZ').q, 'bad%ZZ');
+  assert.deepEqual(core.decodeHash(''), {q: null, flags: [], sel: null});
+});
+
+test('plural', () => {
+  assert.equal(core.plural(1, 'DAG', 'DAGs'), '1 DAG');
+  assert.equal(core.plural(0, 'DAG', 'DAGs'), '0 DAGs');
+  assert.equal(core.plural(2, 'DAG', 'DAGs'), '2 DAGs');
+});

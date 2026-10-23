@@ -16,11 +16,12 @@ from airflow_depgraph.snapshot import Snapshot, with_inferred
 _PKG = Path(__file__).parent
 TEMPLATE = _PKG / "templates" / "graph.html"
 VENDOR_D3 = _PKG / "vendor" / "d3.v7.min.js"
+CORE_JS = _PKG / "templates" / "graph-core.js"
 
 # Search syntax "[N+]text[+[N]]"; the page reads this exact pattern, and a test pins it.
 SEARCH_PATTERN = r"^(?:(\d*)\+)?(.+?)(?:\+(\d*))?$"
 
-_PLACEHOLDER = re.compile(r"__(TITLE|HL_LABEL|STATS|DATA|D3|SEARCH_RE)__")
+_PLACEHOLDER = re.compile(r"__(TITLE|HL_LABEL|STATS|DATA|D3|CORE|SEARCH_RE)__")
 
 
 def build_view(snap: Snapshot, s: Settings, status_override: dict | None = None) -> dict:
@@ -172,6 +173,7 @@ def render(snap: Snapshot, s: Settings, status_override: dict | None = None, *,
         "DATA": _json_for_script(data),
         "SEARCH_RE": SEARCH_PATTERN,
         "D3": VENDOR_D3.read_text(encoding="utf-8"),
+        "CORE": CORE_JS.read_text(encoding="utf-8"),
     }
     # One pass, so substituted content (labels, d3 source) is never re-scanned for placeholders.
     return _PLACEHOLDER.sub(lambda m: values[m.group(1)], TEMPLATE.read_text(encoding="utf-8"))

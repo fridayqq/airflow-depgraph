@@ -245,3 +245,10 @@ def test_stats_plural_and_snapshot_time(small_snapshot):
     assert "sensors: 0 (Airflow)" in line
     assert "failing at snapshot:" in line and "failing now" not in line
     assert "snapshot time unknown" in _stats_line(dict(st, snapshot=None))
+
+
+def test_page_core_is_inlined_before_the_page_script(small_snapshot):
+    html = render(small_snapshot, Settings())
+    core = html.index("function filterView(")
+    assert core < html.index("const SEARCH_RE = /")
+    assert "__CORE__" not in html
