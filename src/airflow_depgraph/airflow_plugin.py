@@ -13,6 +13,7 @@ import sys
 from functools import lru_cache
 from urllib.parse import quote
 
+import anyio
 from airflow.plugins_manager import AirflowPlugin
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -27,8 +28,28 @@ _GENERIC_502 = "Could not read the dependency graph from Airflow; see the api-se
 
 log = logging.getLogger(__name__)
 NO_STORE = {"Cache-Control": "private, no-store"}
+SECURITY_HEADERS = {
+    "Content-Security-Policy": ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                                "img-src data:; connect-src 'none'; frame-ancestors 'self'; "
+                                "base-uri 'none'; form-action 'none'"),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "same-origin",
+}
+# Page builds run in AnyIO's worker threads, but never more than BUSY_WORKERS at once, so a crowd
+# cannot take Airflow's own threadpool. Beyond MAX_WAITING queued builds the answer is 503.
+BUSY_WORKERS = 3
+MAX_WAITING = 6
+_LIMITER = anyio.CapacityLimiter(BUSY_WORKERS)
+_WAITING = 0                    # requests inside a page build, running or queued
 
 app = FastAPI(title="airflow-depgraph", docs_url=None, redoc_url=None, openapi_url=None)
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.update(SECURITY_HEADERS)
+    return response
 
 
 def _configured_base_url() -> str:
@@ -79,16 +100,22 @@ def _login(base_url: str) -> RedirectResponse:
     return RedirectResponse(_login_url(base_url), status_code=302, headers=NO_STORE)
 
 
-def _message(status: int, title: str, body: str) -> HTMLResponse:
+def _message(status: int, title: str, body: str, headers: dict[str, str] | None = None) -> HTMLResponse:
     # Note: Astro's runtime middleware re-wraps text/html responses and drops the status code.
     page = (f"<!doctype html><meta charset=utf-8><title>{html.escape(title)}</title>"
             f"<body style='font:15px system-ui;margin:40px'><h1>{html.escape(title)}</h1>"
             f"<p>{body}</p></body>")
-    return HTMLResponse(page, status_code=status, headers=NO_STORE)
+    return HTMLResponse(page, status_code=status, headers={**NO_STORE, **(headers or {})})
+
+
+def _busy() -> HTMLResponse:
+    return _message(503, "Busy", "Busy building the graph for other users — retry in a minute.",
+                    {"Retry-After": "30"})
 
 
 @app.get("/", response_class=HTMLResponse)
-def page(request: Request, status: str | None = None):
+async def page(request: Request, status: str | None = None):
+    global _WAITING
     try:
         base_url, builder = _runtime()
     except PresetError as exc:
@@ -98,9 +125,19 @@ def page(request: Request, status: str | None = None):
         return _login(base_url)
     with_status = (builder.settings.with_status if status is None
                    else status.lower() in {"1", "true", "yes"})
+    public_url = _public_url(request, base_url)
     try:
-        return HTMLResponse(builder.page(token, _public_url(request, base_url), with_status),
-                            headers=NO_STORE)
+        html_text = builder.cached(token, public_url, with_status)
+        if html_text is None:
+            if _LIMITER.available_tokens == 0 and _WAITING - BUSY_WORKERS > MAX_WAITING:
+                return _busy()
+            _WAITING += 1
+            try:
+                html_text = await anyio.to_thread.run_sync(
+                    builder.page, token, public_url, with_status, limiter=_LIMITER)
+            finally:
+                _WAITING -= 1
+        return HTMLResponse(html_text, headers=NO_STORE)
     except ApiError as exc:
         if exc.status == 401:
             return _login(base_url)

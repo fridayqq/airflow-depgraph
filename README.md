@@ -47,6 +47,7 @@ Tested on Airflow 3.1.5 and 3.3.2, at the root and under a sub-path such as `/ai
   with `?status=1`, or set `AIRFLOW_DEPGRAPH_WITH_STATUS=true`. The rendered page is kept in
   memory per session token for five minutes (at most 64 pages); permission changes show up
   after that.
+- **Load.** Each api-server process builds at most three pages at once; when more than six more are queued, the page answers 503 with `Retry-After: 30` instead of waiting.
 - **Inferred sensor links.** Off by default. With `AIRFLOW_DEPGRAPH_INFER_SENSORS=true` a
   background refresh adds them; see [Sensor dependencies (inferred)](#sensor-dependencies-inferred).
 - **Settings.** The same `AIRFLOW_DEPGRAPH_*` variables as the CLI (`..._HIGHLIGHT`,

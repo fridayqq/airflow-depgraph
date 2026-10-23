@@ -35,6 +35,7 @@ CACHE_ENTRIES = 64
 MAX_BUILDS = 3
 CLIENT_TIMEOUT = 10
 INFER_WORKERS = 4
+STATUS_WORKERS = 4              # per page build; the plugin's builds share one small limiter
 INFER_POLL_SECONDS = 30
 INFER_RETRY_SECONDS = 300
 TOKEN_MARGIN_SECONDS = 15 * 60
@@ -380,6 +381,15 @@ class PageBuilder:
             with self._lock:
                 self._key_locks.pop(key, None)
 
+    def cached(self, token: str, public_url: str | None, with_status: bool) -> str | None:
+        """The cached page for this token and option set, or None. Never builds, never blocks
+        on a build; Airflow accepted the token, so it is offered for inference as in page()."""
+        key = (hashlib.sha256(token.encode()).hexdigest(), with_status)
+        html = self._hit(key)
+        if html is not None:
+            self._offer(token)
+        return html
+
     def _offer(self, token: str) -> None:
         if self.inference is not None:
             self.inference.offer(token)
@@ -405,5 +415,5 @@ class PageBuilder:
                 updated = datetime.fromtimestamp(cached[1], timezone.utc).strftime("%H:%M UTC")
         if with_status:
             snap.dags = fetch_status(client, snap.graph.dag_ids, self.settings, with_tasks=False,
-                                     catalog=snap.catalog)
+                                     catalog=snap.catalog, workers=STATUS_WORKERS)
         return render(snap, self.settings, inferred_note=note, inferred_updated=updated)
