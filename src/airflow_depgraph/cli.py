@@ -310,6 +310,11 @@ def _query(args: argparse.Namespace, direction: str) -> int:
     if hits is None:
         return _unlinked(snap, dag, direction, args)
     info = {h.dag_id: _dag_info(client, snap, h.dag_id) for h in hits}
+    if client is not None and hits:  # live: last run status of the hit DAGs only
+        status = fetch_status(client, [h.dag_id for h in hits], s, with_tasks=False,
+                              catalog=snap.catalog)
+        for h in hits:
+            info[h.dag_id]["last_run"] = (status.get(h.dag_id) or {}).get("last_run")
     if regex:
         hits = _match_tasks(client, snap, hits, regex, info)
     if args.json:

@@ -27,16 +27,16 @@ def _text_via(hit: Hit, strip_prefix: str | None) -> str:
 
 
 def _state_text(d: dict) -> str | None:
-    """ok, FAILED (kind), another run state as is, paused, or None without status."""
+    """ok, FAILED (kind), or another run state as is; None without status."""
     last = d.get("last_run")
-    if last:
-        state = last.get("state")
-        if state == "success":
-            return "ok"
-        if state == "failed":
-            return f"FAILED ({last['kind']})" if last.get("kind") else "FAILED"
-        return state
-    return "paused" if d.get("is_paused") else None
+    if not last:
+        return None
+    state = last.get("state")
+    if state == "success":
+        return "ok"
+    if state == "failed":
+        return f"FAILED ({last['kind']})" if last.get("kind") else "FAILED"
+    return state
 
 
 def _last_run_text(d: dict) -> str | None:
@@ -106,7 +106,8 @@ def hits_json(dag: str, direction: str, depth: int, hits: list[Hit],
         row = {"dag_id": h.dag_id, "hops": h.hops, "via": h.via,
                "is_paused": d.get("is_paused"), "schedule": d.get("schedule"),
                "owners": d.get("owners"), "parent": h.parent,
-               "state": last.get("state"), "kind": last.get("kind"),
+               "state": last.get("state") if last.get("state") in ("success", "failed") else None,
+               "kind": last.get("kind"),
                "last_run_at": last.get("run_after")}
         if with_tasks:
             row["matching_tasks"] = d.get("matching_tasks", [])

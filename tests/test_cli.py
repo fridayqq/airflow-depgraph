@@ -587,10 +587,38 @@ def test_text_row_shows_state_and_last_run(capsys):
     assert dag_b.endswith("sched: —")
 
 
-def test_text_row_marks_paused_dag_without_status(capsys):
+def test_text_row_marks_paused_dag_once(capsys):
     assert cli.main(["upstream", "dag_g", FIX]) == 0
     line = next(x for x in capsys.readouterr().out.splitlines() if "dag_h " in x)
-    assert line.endswith("sched: — · paused")
+    assert "⏸ paused" in line and line.endswith("sched: —")
+    assert "· paused" not in line
+
+
+def test_json_state_is_normalised_to_success_failed_or_null():
+    from airflow_depgraph.cli_format import hits_json
+    from airflow_depgraph.graph import Hit
+    info = {"b": {"last_run": {"state": "queued", "kind": None, "run_after": None}},
+            "c": {"last_run": {"state": "success", "kind": None, "run_after": None}}}
+    rows = {r["dag_id"]: r for r in json.loads(hits_json(
+        "a", "downstream", 1, [Hit("b", 1, None), Hit("c", 1, None)], info, False))["dags"]}
+    assert rows["b"]["state"] is None
+    assert rows["c"]["state"] == "success"
+
+
+def test_live_downstream_shows_status_of_hit_dags(live, monkeypatch, capsys):
+    class RunsClient(FakeClient):
+        def dag_runs(self, dag_id, limit):
+            if dag_id == "y":
+                return [{"dag_run_id": "r1", "state": "failed", "run_after": "2026-10-22T05:00:00Z"}]
+            return []
+
+        def task_instances(self, dag_id, run_id):
+            return [{"task_id": "load", "state": "failed"}]
+
+    monkeypatch.setattr(cli, "AirflowClient", RunsClient)
+    assert cli.main(["downstream", "x", "--url", URL]) == 0
+    line = next(x for x in capsys.readouterr().out.splitlines() if "dag_y" in x or " y " in x)
+    assert line.endswith("· FAILED (pipeline) · last run 2026-10-22 05:00")
 
 
 def test_json_row_has_parent_and_status(capsys):

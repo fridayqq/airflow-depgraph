@@ -90,6 +90,7 @@ def walk(g: Graph, start: str, direction: Direction, depth: int = 5) -> list[Hit
 
         hops += 1
         next_frontier = []
+        # Equal-length paths: branches are expanded in sorted order, so the lowest-id parent wins.
         for dag_node in sorted(found):
             seen_dags.add(dag_node)
             via, guard, origin = found[dag_node]

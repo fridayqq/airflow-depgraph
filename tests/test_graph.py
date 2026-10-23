@@ -85,3 +85,11 @@ def test_walk_parent_is_the_dag_one_hop_closer(small_graph):
     assert hits["dag_b"].parent == "dag_a"
     assert hits["dag_l_report"].parent == "dag_e"
     assert hits["dag_d"].parent == "dag_c"
+
+
+def test_diamond_parent_is_lowest_id_on_equal_paths():
+    nodes = [{"id": f"dag:{x}", "label": x, "type": "dag"} for x in "abcd"]
+    edges = [{"source_id": "dag:a", "target_id": "dag:b"}, {"source_id": "dag:a", "target_id": "dag:c"},
+             {"source_id": "dag:b", "target_id": "dag:d"}, {"source_id": "dag:c", "target_id": "dag:d"}]
+    hits = {h.dag_id: h for h in walk(Graph.from_payload(nodes, edges), "a", "downstream")}
+    assert hits["d"].hops == 2 and hits["d"].parent == "b"
