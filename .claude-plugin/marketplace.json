@@ -1,0 +1,12 @@
+{
+  "name": "airflow-depgraph",
+  "description": "Airflow 3 dependency graph skill for Claude Code",
+  "owner": { "name": "fridayqq" },
+  "plugins": [
+    {
+      "name": "airflow-depgraph",
+      "source": "./",
+      "description": "Fetch, query and render the Airflow 3 cross-DAG dependency graph with the airflow-depgraph CLI"
+    }
+  ]
+}

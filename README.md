@@ -28,6 +28,55 @@ pipx install git+https://github.com/fridayqq/airflow-depgraph
 
 To run from a checkout, use `uv run airflow-depgraph ...`.
 
+## Claude Code skill
+
+The repo also ships a [Claude Code](https://claude.com/claude-code) skill,
+`skills/airflow-depgraph/SKILL.md`. With it, Claude uses this CLI end to end when you ask
+things like "which DAGs depend on `orders_load`?" or "draw the dependency graph of my
+Airflow": it checks the CLI is installed, picks or helps you create a preset, fetches the
+snapshot, answers in text and renders and opens the page. It keeps passwords out of commands
+and chat (environment variable, `--password-stdin` or `password_cmd`).
+
+The skill calls the CLI, so install the CLI first (see [Install](#install)). Then install the
+skill in one of three ways.
+
+**As a plugin (recommended, gets updates):**
+
+```text
+/plugin marketplace add fridayqq/airflow-depgraph
+/plugin install airflow-depgraph@airflow-depgraph
+```
+
+From a shell: `claude plugin marketplace add fridayqq/airflow-depgraph`, then
+`claude plugin install airflow-depgraph@airflow-depgraph`. Plugin skills are namespaced, so
+the explicit command is `/airflow-depgraph:airflow-depgraph`; Claude also picks it up on its
+own when a request matches.
+
+**As a personal skill (all your projects):**
+
+```bash
+mkdir -p ~/.claude/skills/airflow-depgraph
+curl -fsSL https://raw.githubusercontent.com/fridayqq/airflow-depgraph/main/skills/airflow-depgraph/SKILL.md \
+  -o ~/.claude/skills/airflow-depgraph/SKILL.md
+```
+
+**As a project skill (shared with a team through git):** copy the same file to
+`.claude/skills/airflow-depgraph/SKILL.md` in that project. Personal and project skills are
+invoked as `/airflow-depgraph`.
+
+**Setup once per Airflow instance.** Create a preset so Claude does not have to ask for the
+URL each time:
+
+```bash
+mkdir -p ~/.config/airflow-depgraph/presets
+airflow-depgraph presets --example > ~/.config/airflow-depgraph/presets/prod.toml
+# edit url, user_env, password_env (or password_cmd), then export those variables in your shell
+airflow-depgraph presets --preset prod   # check the resolved settings
+```
+
+Then ask Claude, for example: "use the prod preset and show me everything downstream of
+`orders_load`, then open the graph".
+
 ## Quick start
 
 ```bash

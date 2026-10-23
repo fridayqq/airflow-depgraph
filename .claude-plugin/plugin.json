@@ -1,0 +1,7 @@
+{
+  "name": "airflow-depgraph",
+  "description": "Claude Code skill for the airflow-depgraph CLI: fetch, query and render the Airflow 3 cross-DAG dependency graph",
+  "author": { "name": "fridayqq" },
+  "repository": "https://github.com/fridayqq/airflow-depgraph",
+  "license": "MIT"
+}
