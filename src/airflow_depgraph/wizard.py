@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
 
+from airflow_depgraph import sensors as sensormod
 from airflow_depgraph import snapshot as snapmod
 from airflow_depgraph.auth import CredentialsError, resolve_password, resolve_user
 from airflow_depgraph.client import ApiError
@@ -25,9 +26,10 @@ from airflow_depgraph.snapshot import SnapshotError
 DEFAULT_NAME = "prod"
 STATUS_LIMIT = 3000         # above this many DAGs the status rings are not suggested
 TOP_TAGS = 15
+SENSOR_SAMPLE = 40          # DAGs whose task lists discovery reads to suggest infer_sensors
+_PREFIX_BOUNDARY = frozenset(":/._-")
 _NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 _ENV_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_SCHEME_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*)://(.*)$")
 _DEFAULTS = {f.name: f.default for f in dataclasses.fields(Settings)}
 
 # key -> (comment lines, value shown when the key is not set)
@@ -136,32 +138,50 @@ def tag_counts(dags: list[dict]) -> list[tuple[str, int]]:
     return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
 
 
-def _label_prefixes(label: str) -> list[str]:
-    m = _SCHEME_RE.match(label)
-    if m:
-        out = [f"{m[1]}://"]
-        seg, sep, _ = m[2].partition("/")
-        if seg and sep:
-            out.append(f"{m[1]}://{seg}/")
-        return out
-    if label.startswith("/"):
-        seg, sep, _ = label[1:].partition("/")
-        if seg and sep:
-            return [f"/{seg}/"]
-    return []
+def _label_prefixes(label: str) -> set[str]:
+    """Every proper prefix of the label that ends at a separator: s3:, s3:/, s3://, s3://bucket/ …"""
+    return {label[:i + 1] for i, ch in enumerate(label[:-1]) if ch in _PREFIX_BOUNDARY}
 
 
 def asset_prefixes(labels: list[str], top: int = 5) -> list[tuple[str, int]]:
+    """Prefixes shared by at least two labels, most assets first, longest first on a tie.
+    s3: and s3:/ are dropped next to s3://: the same labels, only separators added."""
     counts: Counter = Counter()
     for label in labels:
         counts.update(_label_prefixes(label))
-    kept = [(p, n) for p, n in counts.items() if n >= 2]
-    kept.sort(key=lambda pn: (-pn[1], -len(pn[0]), pn[0]))
-    return kept[:top]
+    shared = sorted((p for p, n in counts.items() if n >= 2), key=len, reverse=True)
+    kept: list[str] = []
+    for p in shared:
+        if not any(q.startswith(p) and counts[q] == counts[p]
+                   and set(q[len(p):]) <= _PREFIX_BOUNDARY for q in kept):
+            kept.append(p)
+    kept.sort(key=lambda p: (-counts[p], -len(p), p))
+    return [(p, counts[p]) for p in kept[:top]]
 
 
 def sensor_count(nodes: list[dict]) -> int:
     return sum(1 for n in nodes if n.get("type") == "sensor")
+
+
+def sample_dag_ids(dag_ids: list[str], n: int = SENSOR_SAMPLE) -> list[str]:
+    """n ids spread evenly over the sorted list; all of them when there are at most n."""
+    ids = sorted(dag_ids)
+    if len(ids) <= n:
+        return ids
+    step = len(ids) / n
+    return [ids[int(i * step)] for i in range(n)]
+
+
+def sample_sensor_tasks(client, dag_ids: list[str], workers: int = 8) -> tuple[int, int]:
+    """(DAGs whose task list was read, candidate sensor tasks among them).
+    A DAG whose tasks cannot be read is not counted; a 401 propagates as ApiError."""
+    if not dag_ids:
+        return (0, 0)
+    tasks_by_dag = sensormod.fetch_tasks(client, list(dag_ids), workers=workers)
+    read = [tasks for tasks in tasks_by_dag.values() if tasks is not None]
+    found = sum(1 for tasks in read for t in tasks
+                if isinstance(t, dict) and sensormod.is_candidate(t.get("operator_name")))
+    return (len(read), found)
 
 
 def plural(n: int, noun: str) -> str:
@@ -186,6 +206,7 @@ class Discovery:
     sensor_nodes: int
     with_status: bool
     infer_sensors: bool = False
+    sensor_sample: tuple[int, int] = (0, 0)     # (DAGs read, candidate sensor tasks found)
     dag_ids: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict:
@@ -197,6 +218,8 @@ class Discovery:
             "assets": self.assets,
             "asset_prefixes": [{"prefix": p, "assets": n} for p, n in self.asset_prefixes],
             "sensor_nodes": self.sensor_nodes,
+            "sensor_tasks": {"sampled_dags": self.sensor_sample[0],
+                             "candidates": self.sensor_sample[1]},
             "suggest": {"with_status": self.with_status, "infer_sensors": self.infer_sensors},
         }
 
@@ -220,12 +243,14 @@ def discover(client, settings: Settings) -> Discovery:
     live = [d for d in dags if isinstance(d, dict) and d.get("dag_id") in catalog]
     paused = sum(1 for c in catalog.values() if c["is_paused"])
     labels = [str(n.get("label") or "") for n in nodes if n.get("type") == "asset"]
+    active = [d for d, c in catalog.items() if not c["is_paused"]] or list(catalog)
+    sampled, found = sample_sensor_tasks(client, sample_dag_ids(active), workers=settings.workers)
     return Discovery(
         url=settings.url, airflow_version=version, scheduler=scheduler,
         dags_total=len(catalog), dags_active=len(catalog) - paused, dags_paused=paused,
         tags=tag_counts(live), assets=len(labels), asset_prefixes=asset_prefixes(labels),
         sensor_nodes=sensor_count(nodes), with_status=suggest_with_status(len(catalog)),
-        dag_ids=sorted(catalog))
+        infer_sensors=found > 0, sensor_sample=(sampled, found), dag_ids=sorted(catalog))
 
 
 def format_report(d: Discovery) -> str:
@@ -238,6 +263,8 @@ def format_report(d: Discovery) -> str:
     prefixes = ", ".join(f"{p} ({n})" for p, n in d.asset_prefixes) or "none"
     lines.append(f"assets: {d.assets}; prefixes: {prefixes}")
     lines.append(f"sensor nodes: {d.sensor_nodes}")
+    lines.append(f"sensor tasks: {d.sensor_sample[1]} in a sample of "
+                 f"{plural(d.sensor_sample[0], 'DAG')}")
     lines.append(f"suggest: with_status={str(d.with_status).lower()}, "
                  f"infer_sensors={str(d.infer_sensors).lower()}")
     return "\n".join(lines)
@@ -534,7 +561,9 @@ def run_interactive(p: Prompter, given: Mapping[str, object], *, env: Mapping[st
             disc = discover(client, settings)
             p.ok(f"{plural(disc.dags_total, 'DAG')} ({disc.dags_active} active, "
                  f"{disc.dags_paused} paused), {plural(disc.assets, 'asset')}, "
-                 f"{plural(disc.sensor_nodes, 'sensor node')}")
+                 f"{plural(disc.sensor_nodes, 'sensor node')}, "
+                 f"{plural(disc.sensor_sample[1], 'sensor task')} in "
+                 f"{plural(disc.sensor_sample[0], 'sampled DAG')}")
         except (ApiError, SnapshotError) as exc:
             p.warn(f"discovery failed ({exc}); asking without suggestions")
     _ask_choices(p, given, chosen, disc)
@@ -753,9 +782,14 @@ def _ask_choices(p: Prompter, given: Mapping[str, object], chosen: dict, disc) -
         p.ok(f"infer_sensors: {str(chosen['infer_sensors']).lower()} (from flag)")
     else:
         size = f"reads the tasks of {plural(n, 'DAG')}; " if n is not None else ""
-        p.dim(f"Sensor inference finds waits on other DAGs that Airflow does not show: {size}"
+        hint = ""
+        if disc and disc.sensor_sample[0]:
+            read, found = disc.sensor_sample
+            hint = f"a sample of {plural(read, 'DAG')} has {plural(found, 'sensor task')} to check; "
+        p.dim(f"Sensor inference finds waits on other DAGs that Airflow does not show: {hint}{size}"
               "about a minute on ~600 DAGs.")
-        chosen["infer_sensors"] = p.confirm("Infer sensor dependencies?", False)
+        chosen["infer_sensors"] = p.confirm("Infer sensor dependencies?",
+                                            bool(disc and disc.infer_sensors))
     # highlight
     if given.get("highlight") is not None:
         chosen["highlight"] = given["highlight"]

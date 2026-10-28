@@ -55,6 +55,14 @@ class FakeAirflow:
                 dag("orders_report", ["team-a"], paused=True), dag("other", ["team-b"]),
                 dag("plain", []), dag("old", ["gone"], stale=True)]
 
+    def tasks(self, dag_id):
+        if dag_id == "orders_clean":
+            return [{"task_id": "clean", "operator_name": "PythonOperator"},
+                    {"task_id": "wait_load", "operator_name": "PythonSensor"}]
+        if dag_id == "other":
+            raise ApiError("forbidden", status=403, path=f"/dags/{dag_id}/tasks")
+        return [{"task_id": "run", "operator_name": "EmptyOperator"}]
+
     def dependencies(self, node_id=None):
         labels = ["s3://bucket/a", "s3://bucket/b", "s3://bucket/c", "postgres://db/t"]
         nodes = [{"id": f"asset:{i}", "label": lab, "type": "asset"}
@@ -133,6 +141,37 @@ def test_asset_prefixes():
     assert ordered[0] == ("s3://", 4)
     assert wizard.asset_prefixes(labels, top=2) == ordered[:2]
     assert wizard.asset_prefixes(["a", "b", "s3://only/x"]) == []
+
+
+def test_asset_prefixes_offers_prefixes_inside_the_scheme():
+    labels = ["x-dp-orders://dbt-run", "x-dp-orders://dbt-test", "x-dp-sales://dbt-run",
+              "x-dp-customers://load", "x-legacy://load"]
+    got = wizard.asset_prefixes(labels)
+    assert got[0] == ("x-", 5) and got[1] == ("x-dp-", 4)
+    got = dict(wizard.asset_prefixes(labels, top=20))
+    assert got["x-dp-orders://"] == 2 and got["x-dp-orders://dbt-"] == 2
+    # x-dp-orders: and x-dp-orders:/ strip the same labels as x-dp-orders:// and are left out
+    assert not any(p.endswith(":") or p.endswith(":/") for p in got)
+    assert wizard.asset_prefixes(["s3://bucket/a", "s3://bucket/b"]) == [("s3://bucket/", 2),
+                                                                          ("s3://", 2)]
+    assert wizard.asset_prefixes(["order_a", "orders_b"]) == []
+    assert wizard.asset_prefixes(["same://x", "same://x"]) == [("same://", 2)]
+    assert wizard.asset_prefixes(["only"]) == [] and wizard.asset_prefixes([]) == []
+
+
+def test_sample_dag_ids_spreads_over_the_sorted_list():
+    ids = [f"dag_{i:03d}" for i in range(100)]
+    sample = wizard.sample_dag_ids(ids, n=10)
+    assert len(sample) == 10 and sample[0] == "dag_000" and sample[-1] == "dag_090"
+    assert sample == sorted(sample) and len(set(sample)) == 10
+    assert wizard.sample_dag_ids(["b", "a"], n=10) == ["a", "b"]
+    assert wizard.sample_dag_ids([], n=10) == []
+
+
+def test_sample_sensor_tasks_counts_candidates_and_skips_unreadable_dags():
+    client = fake()(URL, token="t")
+    assert wizard.sample_sensor_tasks(client, ["orders_load", "orders_clean", "other"]) == (2, 1)
+    assert wizard.sample_sensor_tasks(client, []) == (0, 0)
 
 
 def test_sensor_count_and_suggest_with_status():
@@ -273,7 +312,9 @@ def test_discover_summarises_the_instance():
                          {"name": "team-b", "dags": 1}]
     assert j["assets"] == 4 and j["sensor_nodes"] == 1
     assert {"prefix": "s3://bucket/", "assets": 3} in j["asset_prefixes"]
-    assert j["suggest"] == {"with_status": True, "infer_sensors": False}
+    # the sample covers the 4 active DAGs; "other" is unreadable, orders_clean has a PythonSensor
+    assert j["sensor_tasks"] == {"sampled_dags": 3, "candidates": 1}
+    assert j["suggest"] == {"with_status": True, "infer_sensors": True}
     assert "old" not in d.dag_ids
 
 
@@ -613,7 +654,7 @@ def test_discover_json_shape_and_writes_nothing(tmp_path, live, capsys, monkeypa
     out = capsys.readouterr().out
     data = json.loads(out)
     assert set(data) == {"url", "airflow_version", "scheduler", "dags", "tags", "assets",
-                         "asset_prefixes", "sensor_nodes", "suggest"}
+                         "asset_prefixes", "sensor_nodes", "sensor_tasks", "suggest"}
     assert data["url"] == URL and data["dags"]["total"] == 5
     assert data["tags"][0] == {"name": "team-a", "dags": 3}
     assert PW not in out
@@ -625,6 +666,7 @@ def test_discover_text_report(tmp_path, live, capsys):
     out = capsys.readouterr().out
     assert "Airflow 3.3.2" in out and "DAGs: 5 (4 active, 1 paused)" in out
     assert "team-a (3)" in out and "s3://bucket/ (3)" in out
+    assert "sensor tasks: 1 in a sample of 3 DAGs" in out
 
 
 def test_discover_needs_url_and_credentials(live, monkeypatch, capsys):
