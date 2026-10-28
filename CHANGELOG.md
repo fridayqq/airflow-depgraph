@@ -5,6 +5,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-28
+
+### Changed
+- README screenshot redone on a smaller fictional snapshot (23 DAGs) so the labels are readable; `docs/demo_snapshot.py` writes exactly that snapshot.
+
+### Fixed
+- `fetch_tasks` stops its queued calls deterministically after a 401. The test that counts those calls depended on thread timing and failed on a slow CI runner (the v0.5.1 tag build).
+
 ## [0.5.1] - 2026-10-28
 
 ### Added
