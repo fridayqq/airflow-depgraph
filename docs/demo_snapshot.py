@@ -1,7 +1,7 @@
 """Write the fictional snapshot behind the README screenshot: python3 docs/demo_snapshot.py demo.json
 
-Screenshot: AIRFLOW_DEPGRAPH_HIGHLIGHT_LABEL=Reports airflow-depgraph render demo.json --highlight '_report$' -o demo.html,
-open it in a 1400x900 window, click orders_enrich, press Fit.
+Screenshot: AIRFLOW_DEPGRAPH_HIGHLIGHT_LABEL=Reports airflow-depgraph render demo.json \
+--highlight '_report$' -o demo.html, open it in a 1400x900 window, click orders_enrich, press Fit.
 """
 
 from __future__ import annotations
@@ -100,11 +100,13 @@ for dag_id, teams, cron, outlets in PIPELINES:
 for i, (src, dst) in enumerate(TRIGGERS, 1):
     tid = f"trigger:{i}"
     nodes.append({"id": tid, "label": f"trigger_{dst}", "type": "trigger"})
-    edges += [{"source_id": f"dag:{src}", "target_id": tid}, {"source_id": tid, "target_id": f"dag:{dst}"}]
+    edges += [{"source_id": f"dag:{src}", "target_id": tid},
+              {"source_id": tid, "target_id": f"dag:{dst}"}]
 for i, (waiter, task, target) in enumerate(SENSORS, 1):
     sid = f"sensor:{i}"
     nodes.append({"id": sid, "label": task, "type": "sensor"})
-    edges += [{"source_id": f"dag:{target}", "target_id": sid}, {"source_id": sid, "target_id": f"dag:{waiter}"}]
+    edges += [{"source_id": f"dag:{target}", "target_id": sid},
+              {"source_id": sid, "target_id": f"dag:{waiter}"}]
 
 # The order of nodes and edges seeds the force layout; this order gives the spread-out picture.
 random.seed(2)
