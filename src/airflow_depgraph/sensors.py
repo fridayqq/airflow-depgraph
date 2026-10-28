@@ -275,11 +275,16 @@ def _resolve_dag(client: AirflowClient, dag_id: str, tasks: list[dict], known: s
 def fetch_tasks(client: AirflowClient, dag_ids: list[str],
                 workers: int = 8) -> dict[str, list[dict] | None]:
     """{dag_id: GET /dags/{id}/tasks items}; None when unreadable (403 included), 401 aborts."""
+    stop = threading.Event()   # set on a 401: queued calls return without asking Airflow
+
     def one(d: str) -> list[dict] | None:
+        if stop.is_set():
+            return None
         try:
             return client.tasks(d)
         except ApiError as exc:
             if exc.status in ABORT_STATUSES:
+                stop.set()
                 raise
             return None
     pool = ThreadPoolExecutor(max_workers=workers)

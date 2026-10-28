@@ -272,9 +272,7 @@ def test_fetch_tasks_stops_calling_after_a_401():
             return []
     with pytest.raises(ApiError):
         fetch_tasks(C(), ["first"] + [f"d{i}" for i in range(50)], workers=1)
-    import time
-    time.sleep(0.05)
-    assert len(calls) < 5
+    assert calls == ["first"]   # the worker sees the stop flag before every later call
 
 
 def test_resolve_dag_stops_when_the_run_is_cancelled():
