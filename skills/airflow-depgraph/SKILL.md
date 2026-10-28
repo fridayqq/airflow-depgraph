@@ -33,7 +33,8 @@ escaping.
       asset prefixes, sensor nodes and suggestions.
    c. Ask with AskUserQuestion, options from the JSON: tags (multiSelect, top 4 by count plus
       "none"; Other to type), asset prefix (top candidates plus "keep labels"), status rings
-      (recommended per `suggest.with_status`), sensor inference.
+      (recommended per `suggest.with_status`), sensor inference (recommended per
+      `suggest.infer_sensors`; `sensor_tasks` says how many sensor tasks a sample of DAGs has).
    d. `airflow-depgraph init NAME --yes --url U --tag team-a --strip-prefix 's3://bucket/'
       --with-status …` (same credential flags as in b).
    e. Verify with `airflow-depgraph presets --preset NAME`.

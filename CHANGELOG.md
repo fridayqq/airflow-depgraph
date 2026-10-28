@@ -5,6 +5,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-28
+
+### Added
+- `init` proposes every asset prefix shared by at least two labels, cut at a separator (`:/._-`), not only `scheme://` and `scheme://segment/`: for example `x-dp-` when most assets start with it. A shorter prefix that strips exactly the same assets as a longer one is left out.
+- `--discover --json` reports `sensor_tasks`: the candidate sensor tasks found in the task lists of a sample of 40 active DAGs, which is what `suggest.infer_sensors` is based on.
+- A screenshot of the rendered page in the README, `open graph.html` in the quick start, a plugin icon, and `docs/demo_snapshot.py` (writes the fictional snapshot the screenshot was taken from).
+
+### Fixed
+- `init` suggested sensor inference as "no" on every instance: the suggestion was never computed. It now comes from the sample above, and the question says what the sample found.
+
 ## [0.5.0] - 2026-10-23
 
 ### Added

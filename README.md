@@ -4,6 +4,8 @@
 
 Fetch, query and render the Airflow 3 cross-DAG dependency graph (DAG → asset / trigger / sensor → DAG) from any Airflow 3 instance. It uses only the Python standard library. The result is a JSON snapshot you can query offline, plus one self-contained HTML page.
 
+![The rendered page: a force-directed graph of DAGs and assets with status rings, a selected DAG and its downstream chain highlighted, and a side panel that lists the downstream DAGs by hop with the asset each one came through](docs/images/page.png)
+
 ![How the pieces fit: Airflow → fetch → snapshot → render → HTML, with presets and credentials feeding fetch](docs/images/overview.png)
 
 Things to know before you use it:
@@ -60,7 +62,7 @@ Tested on Airflow 3.1.5 and 3.3.2, at the root and under a sub-path such as `/ai
 **Install on Astro.** Add one line to the project's `requirements.txt` and rebuild:
 
 ```text
-airflow-depgraph @ https://github.com/fridayqq/airflow-depgraph/archive/refs/tags/v0.5.0.tar.gz
+airflow-depgraph @ https://github.com/fridayqq/airflow-depgraph/archive/refs/tags/v0.5.1.tar.gz
 ```
 
 ```bash
@@ -146,6 +148,9 @@ airflow-depgraph render deps.json -o graph.html
 # Or both in one go: writes graph.html and graph.json
 airflow-depgraph graph -o graph.html
 
+# Open the page in the browser (macOS; xdg-open on Linux, start on Windows)
+open graph.html
+
 # Which DAGs run downstream of my_dag?
 airflow-depgraph downstream my_dag deps.json
 
@@ -192,7 +197,7 @@ The user comes from `--user` or the variable named by `user_env` (`AIRFLOW_DEPGR
 
 ## Create a preset
 
-`airflow-depgraph init [NAME]` writes `NAME.toml` by asking questions in the terminal. Every answer is checked against your Airflow, which also proposes tags, an asset prefix to strip and the optional settings. Nothing is written until you confirm at the end, and the password is never asked for as a stored value: you name an environment variable or a command that prints it.
+`airflow-depgraph init [NAME]` writes `NAME.toml` by asking questions in the terminal. Every answer is checked against your Airflow, which also proposes tags, an asset prefix to strip (every prefix shared by at least two assets, cut at a separator, most assets first) and the optional settings. Sensor inference is recommended when the task lists of a sample of 40 active DAGs contain at least one sensor other than `ExternalTaskSensor` and the time, file and BI sensors. Nothing is written until you confirm at the end, and the password is never asked for as a stored value: you name an environment variable or a command that prints it.
 
 ```text
 $ airflow-depgraph init
@@ -224,7 +229,7 @@ Airflow password:
 ✓ signed in as alice — Airflow 3.3.2
 
 [6/7] Choices
-✓ 584 DAGs (431 active, 153 paused), 210 assets, 12 sensor nodes
+✓ 584 DAGs (431 active, 153 paused), 210 assets, 12 sensor nodes, 7 sensor tasks in 40 sampled DAGs
 Tags (the page shows only DAGs with these tags):
   1) team-a  (116)
   2) team-b  (74)
@@ -270,10 +275,11 @@ airflow-depgraph init --discover --json --url https://airflow.example.com
  "tags": [{"name": "team-a", "dags": 116}],
  "assets": 210, "asset_prefixes": [{"prefix": "s3://bucket/", "assets": 40}],
  "sensor_nodes": 12,
- "suggest": {"with_status": true, "infer_sensors": false}}
+ "sensor_tasks": {"sampled_dags": 40, "candidates": 7},
+ "suggest": {"with_status": true, "infer_sensors": true}}
 ```
 
-`tags` lists every tag by DAG count. `dags` counts the DAGs that are not stale.
+`tags` lists every tag by DAG count. `dags` counts the DAGs that are not stale. `sensor_tasks` counts the candidate sensor tasks in the task lists of a sample of active DAGs (`sampled_dags` is how many could be read); `suggest.infer_sensors` is true when there is at least one.
 
 ## Presets
 
