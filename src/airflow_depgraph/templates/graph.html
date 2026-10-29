@@ -6,117 +6,179 @@
 <title>__TITLE__</title>
 <style>
 :root {
-  --bg: #fcfcfb; --panel: #ffffff; --fg: #0b0b0b; --mut: #52514e; --line: #e5e4e0; --acc: #2a78d6;
-  --c-dag: #2a78d6; --c-asset: #eb6834; --c-trigger: #1baf7a; --c-sensor: #eda100;
-  --critical: #d03b3b; --warning: #fab219; --edge: #b9b7b0; --guard: #8f8d86; --shadow: rgba(0, 0, 0, .15);
+  --bg: #edf0f2; --grid: #dfe4e8; --grid2: #cfd6dc; --panel: #ffffff; --fg: #172029; --mut: #5c6b78;
+  --line: #d6dce1; --acc: #1d5bbf; --acc-soft: #e4ecfa;
+  --c-dag: #1d5bbf; --c-asset: #e2622b; --c-trigger: #15a06f; --c-sensor: #e0a100;
+  --critical: #cf3434; --warning: #eab308; --edge: #a9b4bd; --guard: #8b969f; --shadow: rgba(23, 32, 41, .18);
+  --sans: "IBM Plex Sans", "Segoe UI Variable", "Helvetica Neue", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #1a1a19; --panel: #22221f; --fg: #f0efec; --mut: #c3c2b7; --line: #3a3935; --acc: #3987e5;
-    --c-dag: #3987e5; --c-asset: #d95926; --c-trigger: #199e70; --c-sensor: #c98500; --edge: #55534d; --guard: #8a8880; --shadow: rgba(0, 0, 0, .5);
+    --bg: #0e161d; --grid: #172129; --grid2: #1f2c36; --panel: #131e27; --fg: #e8edf1; --mut: #93a3b1;
+    --line: #25323d; --acc: #5b93ea; --acc-soft: #182a44;
+    --c-dag: #4f8ae6; --c-asset: #e06a35; --c-trigger: #22b47c; --c-sensor: #d9a400;
+    --edge: #44535f; --guard: #6c7a86; --shadow: rgba(0, 0, 0, .55);
   }
 }
 :root[data-theme="dark"] {
-  --bg: #1a1a19; --panel: #22221f; --fg: #f0efec; --mut: #c3c2b7; --line: #3a3935; --acc: #3987e5;
-  --c-dag: #3987e5; --c-asset: #d95926; --c-trigger: #199e70; --c-sensor: #c98500; --edge: #55534d; --guard: #8a8880; --shadow: rgba(0, 0, 0, .5);
+  --bg: #0e161d; --grid: #172129; --grid2: #1f2c36; --panel: #131e27; --fg: #e8edf1; --mut: #93a3b1;
+  --line: #25323d; --acc: #5b93ea; --acc-soft: #182a44;
+  --c-dag: #4f8ae6; --c-asset: #e06a35; --c-trigger: #22b47c; --c-sensor: #d9a400;
+  --edge: #44535f; --guard: #6c7a86; --shadow: rgba(0, 0, 0, .55);
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html, body { height: 100%; margin: 0; }
-body {
-  background: var(--bg); color: var(--fg); display: flex; flex-direction: column;
-  font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-}
-header {
-  display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center;
-  padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
-}
-header h1 { font-size: 16px; margin: 0; }
-header .st { color: var(--mut); }
+body { background: var(--bg); color: var(--fg); display: flex; flex-direction: column; font: 13px/1.45 var(--sans); }
+:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+
+/* Instrument bar: name and counts on the left, the command field on the right. */
+header { background: var(--panel); border-bottom: 1px solid var(--line); }
+.bar { display: flex; align-items: center; gap: 24px; padding: 10px 20px 0; }
+.figures { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 14px; padding: 4px 20px 8px; }
+header h1 { font-size: 18px; font-weight: 600; letter-spacing: -.012em; margin: 0; white-space: nowrap; }
+.st { color: var(--mut); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+#stats { display: inline-flex; flex-wrap: wrap; gap: 0 14px; }
+#stats .fig { display: inline-flex; gap: 4px; }
+#stats .fig b { color: var(--fg); font-weight: 600; }
+#stats .fig.bad b { color: var(--critical); }
+#shown, #ver { padding-left: 14px; border-left: 1px solid var(--line); }
+.cmd { margin-left: auto; display: flex; gap: 8px; align-items: center; flex: 0 1 460px; min-width: 240px; }
 input[type=search] {
-  font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px;
-  background: var(--bg); color: var(--fg); flex: 1 1 260px; max-width: 420px; min-width: 0;
+  font: inherit; width: 100%; padding: 7px 12px 7px 32px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg) no-repeat 11px center / 14px 14px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%235c6b78' stroke-width='1.8'%3E%3Ccircle cx='7' cy='7' r='4.5'/%3E%3Cpath d='M10.5 10.5 14 14'/%3E%3C/svg%3E");
+  color: var(--fg); min-width: 0; transition: border-color .15s, box-shadow .15s;
 }
-label.t { display: inline-flex; align-items: center; gap: 4px; color: var(--mut); cursor: pointer; }
-.filters { display: contents; }  /* on desktop the toggles and legend sit in the header row */
-#filtersBtn { display: none; font: inherit; padding: 2px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--acc); cursor: pointer; }
-main { flex: 1; display: grid; grid-template-columns: 1fr 320px; min-height: 0; }
-svg { width: 100%; height: 100%; display: block; cursor: grab; }
-svg:active { cursor: grabbing; }
-aside {
-  border-left: 1px solid var(--line); background: var(--panel); padding: 12px 14px;
-  overflow: auto; font-size: 12.5px;
+input[type=search]:focus { border-color: var(--acc); box-shadow: 0 0 0 3px var(--acc-soft); outline: none; }
+input[type=search]::placeholder { color: var(--mut); }
+header button, aside button, #filtersBtn {
+  font: inherit; font-weight: 500; padding: 6px 12px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel); color: var(--acc); cursor: pointer; white-space: nowrap; transition: background .15s, border-color .15s;
 }
-aside h2 { font-size: 14px; margin: 0 0 6px; word-break: break-all; }
-aside h3 { font-size: 12px; color: var(--mut); margin: 12px 0 4px; text-transform: uppercase; letter-spacing: .03em; }
-aside ul { margin: 0; padding-left: 16px; }
-aside li { margin: 2px 0; cursor: pointer; word-break: break-all; }
-aside li:hover { color: var(--acc); }
-aside .hint { color: var(--mut); }
-aside button { font: inherit; margin-top: 6px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--acc); cursor: pointer; }
-aside h4 { margin: 10px 0 2px; font-size: 12px; color: var(--mut); font-weight: 600; }
-aside input[type=search] { width: 100%; margin: 4px 0; }
-header button { font: inherit; padding: 2px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--acc); cursor: pointer; }
-aside a { color: var(--acc); }
-.legend { display: flex; gap: 14px; flex-wrap: wrap; color: var(--mut); }
+header button:hover, aside button:hover { background: var(--acc-soft); border-color: var(--acc); }
+#filtersBtn { display: none; }
+
+/* Switches, grouped by what they do to the picture. */
+.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; padding: 0 20px 10px; }
+.group { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; }
+.group .gl { color: var(--mut); font-size: 11.5px; font-weight: 500; padding-right: 2px; }
+label.t { display: inline-flex; align-items: center; gap: 6px; color: var(--mut); cursor: pointer; user-select: none; padding: 2px 0; }
+label.t:hover { color: var(--fg); }
+label.t input {
+  appearance: none; margin: 0; width: 26px; height: 15px; border-radius: 8px; background: var(--line); position: relative;
+  cursor: pointer; transition: background .15s; flex: none;
+}
+label.t input::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 11px; height: 11px; border-radius: 50%; background: var(--panel);
+  box-shadow: 0 1px 2px var(--shadow); transition: transform .15s;
+}
+label.t input:checked { background: var(--acc); }
+label.t input:checked::after { transform: translateX(11px); }
+label.t input:checked + *, label.t:has(input:checked) { color: var(--fg); }
+.legend { display: inline-flex; gap: 12px; flex-wrap: wrap; color: var(--mut); margin-left: auto; padding-left: 12px; border-left: 1px solid var(--line); }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
-.legend i { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+.legend i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
 .legend i.sq { border-radius: 2px; }
-.legend i.dia { border-radius: 2px; transform: rotate(45deg); background: var(--c-sensor); }
-.legend i.tri {
-  width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent;
-  border-bottom: 11px solid var(--c-trigger); border-radius: 0;
-}
+.legend i.dia { border-radius: 2px; transform: rotate(45deg) scale(.9); background: var(--c-sensor); }
+.legend i.tri { width: 0; height: 0; border-left: 5.5px solid transparent; border-right: 5.5px solid transparent; border-bottom: 10px solid var(--c-trigger); border-radius: 0; }
 .legend i.dia.inf { background: none; border: 2px dashed var(--c-sensor); }
 .legend i.dia.grd { background: none; border: 2px dashed var(--mut); }
 .legend i.ring { background: none; border: 2.5px solid var(--critical); }
 .legend i.ring.warn { border-color: var(--warning); }
 .legend i.ring.hl { border-color: var(--fg); }
+
+/* The drafting surface: fine grid with a heavier line every fifth square. */
+main { flex: 1; display: grid; grid-template-columns: 1fr 340px; min-height: 0; }
+svg {
+  width: 100%; height: 100%; display: block; cursor: grab;
+  background-color: var(--bg);
+  background-image:
+    linear-gradient(var(--grid2) 1px, transparent 1px), linear-gradient(90deg, var(--grid2) 1px, transparent 1px),
+    linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 120px 120px, 120px 120px, 24px 24px, 24px 24px;
+  background-position: -1px -1px;
+}
+svg:active { cursor: grabbing; }
+text.lbl { font-family: var(--sans); font-size: 10px; font-weight: 500; fill: var(--fg); pointer-events: none; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round; }
+
+/* Trace sheet: the selected node and its chain, hop by hop. */
+aside { border-left: 1px solid var(--line); background: var(--panel); padding: 14px 18px 24px; overflow: auto; font-size: 12.5px; }
+aside h2 { font: 500 14px/1.3 var(--mono); margin: 0 0 8px; word-break: break-all; letter-spacing: -.01em; }
+aside > div:first-of-type { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; }
+aside h3 {
+  display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; color: var(--fg);
+  margin: 18px 0 6px; padding-bottom: 6px; border-bottom: 1px solid var(--line);
+}
+aside h3 .copy { margin: 0 0 0 auto; padding: 2px 8px; font-size: 11px; border-radius: 6px; }
+aside h4 { display: flex; align-items: center; gap: 8px; margin: 10px 0 2px; font-size: 11.5px; font-weight: 500; color: var(--mut); }
+aside h4::after { content: ""; flex: 1; border-top: 1px dashed var(--line); }
+aside ul { margin: 0; padding: 0; list-style: none; }
+aside li {
+  position: relative; margin: 0; padding: 3px 8px 3px 14px; cursor: pointer; word-break: break-all; border-radius: 6px;
+  border-left: 2px solid var(--line); margin-left: 4px; border-top-left-radius: 0; border-bottom-left-radius: 0;
+}
+aside li:hover { background: var(--acc-soft); color: var(--fg); border-left-color: var(--acc); }
+aside .hint { color: var(--mut); }
+aside p.hint { margin: 6px 0; }
+aside button { margin-top: 6px; padding: 4px 10px; }
+aside input[type=search] { width: 100%; margin: 4px 0 6px; }
+aside a { color: var(--acc); }
 #tip {
-  position: fixed; pointer-events: none; background: var(--panel); border: 1px solid var(--line);
-  border-radius: 6px; padding: 6px 9px; font-size: 12px; box-shadow: 0 2px 10px var(--shadow);
-  display: none; max-width: 360px; word-break: break-all; z-index: 9;
+  position: fixed; pointer-events: none; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 7px 10px; font-size: 12px; box-shadow: 0 6px 20px var(--shadow); display: none; max-width: 360px; word-break: break-all; z-index: 9;
 }
-text.lbl {
-  font-size: 10px; fill: var(--fg); pointer-events: none; paint-order: stroke;
-  stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round;
-}
-.badge { display: inline-block; padding: 0 6px; border-radius: 999px; font-size: 11px; background: var(--line); }
-.badge.crit { background: var(--critical); color: #fff; }
-.badge.warn { background: var(--warning); color: #0b0b0b; }
+#tip b { font-family: var(--mono); font-weight: 500; }
+.badge { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; border: 1px solid var(--line); color: var(--mut); background: var(--bg); }
+.badge.crit { background: var(--critical); border-color: var(--critical); color: #fff; }
+.badge.warn { background: var(--warning); border-color: var(--warning); color: #172029; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 @media (max-width: 720px) {
   html, body { height: auto; min-height: 100%; }
   main { display: block; }
   svg { height: 60vh; }
   aside { border-left: 0; border-top: 1px solid var(--line); }
-  header { padding: 8px 12px; gap: 6px 10px; }
-  header h1 { font-size: 15px; }
-  header .st { font-size: 12px; }
+  .bar { flex-wrap: wrap; gap: 8px 12px; padding: 10px 14px 0; }
+  .figures { padding: 4px 14px 8px; }
+  .cmd { flex: 1 1 100%; margin-left: 0; }
   #filtersBtn { display: inline-block; }
   header .filters { display: none; }
-  body.filters-open header .filters { display: contents; }
+  body.filters-open header .filters { display: flex; padding: 0 14px 10px; }
+  .legend { margin-left: 0; padding-left: 0; border-left: 0; }
 }
 </style>
 </head>
 <body>
 <header>
-  <h1>__TITLE__</h1>
-  <span class="st" id="stats">__STATS__</span>
-  <span class="st" id="shown"></span>
-  <span class="st" id="ver" hidden></span>
-  <input id="q" type="search" placeholder="find a DAG or asset… (+dag, dag+, 2+dag+3)" autocomplete="off" aria-label="Search">
-  <button type="button" id="fit" title="Zoom to fit all shown nodes">Fit</button>
-  <button type="button" id="filtersBtn" aria-controls="filters">Filters</button>
+  <div class="bar">
+    <h1>__TITLE__</h1>
+    <div class="cmd">
+      <input id="q" type="search" placeholder="Find a DAG or asset   +dag  dag+  2+dag+3" autocomplete="off" aria-label="Search">
+      <button type="button" id="fit" title="Zoom to fit all shown nodes">Fit</button>
+      <button type="button" id="filtersBtn" aria-controls="filters">Filters</button>
+    </div>
+  </div>
+  <div class="figures">
+    <span class="st" id="stats">__STATS__</span>
+    <span class="st" id="shown"></span>
+    <span class="st" id="ver" hidden></span>
+  </div>
   <div class="filters" id="filters">
-  <label class="t"><input type="checkbox" id="hideAssets"> DAG→DAG (hide assets)</label>
-  <label class="t"><input type="checkbox" id="onlyFail"> only failing + their chain</label>
-  <label class="t"><input type="checkbox" id="blast"> blast radius</label>
-  <label class="t"><input type="checkbox" id="onlyLinked" checked> only linked DAGs</label>
-  <label class="t"><input type="checkbox" id="onlyActive" checked> only active DAGs</label>
+  <span class="group"><span class="gl">Show</span>
+  <label class="t"><input type="checkbox" id="onlyLinked" checked> linked DAGs only</label>
+  <label class="t"><input type="checkbox" id="onlyActive" checked> active only</label>
   <label class="t" id="tagWrap"><input type="checkbox" id="onlyTags" checked> <span id="tagLbl">only tags</span></label>
   <label class="t" id="connWrap"><input type="checkbox" id="conn"> + linked DAGs of other teams</label>
-  <label class="t" id="guardWrap"><input type="checkbox" id="showGuards"> show deploy guards</label>
+  <label class="t"><input type="checkbox" id="hideAssets"> DAG→DAG, no assets</label>
+  <label class="t"><input type="checkbox" id="assetLabels"> asset names</label>
+  <label class="t" id="guardWrap"><input type="checkbox" id="showGuards"> deploy guards</label>
+  </span>
+  <span class="group"><span class="gl">Focus</span>
+  <label class="t"><input type="checkbox" id="onlyFail"> failing and their chain</label>
+  <label class="t"><input type="checkbox" id="blast"> blast radius</label>
   <label class="t" id="hlWrap"><input type="checkbox" id="hl"> __HL_LABEL__</label>
+  </span>
   <span class="legend">
     <span><i style="background:var(--c-dag)"></i>DAG</span>
     <span><i class="sq" style="background:var(--c-asset)"></i>asset</span>
@@ -284,7 +346,9 @@ function updateLabels() {
   labels.attr('display', d => {
     const inFocus = d.id === selectedId || (focusKeep && focusKeep.has(d.id));
     const dag = d.type === 'dag' && (SMALL || d.down >= 5 || failing(d) || k >= ZOOM_LABELS);
-    return inFocus || dag ? null : 'none';
+    // Assets, triggers and sensors in the focus set are named only with "asset names" on; the selected one always.
+    const named = d.type === 'dag' || d.id === selectedId || box('assetLabels').checked;
+    return (inFocus && named) || dag ? null : 'none';
   });
   placeLabels(labels);
 }
@@ -520,6 +584,7 @@ function runSearch(fit) {
 const NEG = [['allLinks', 'onlyLinked'], ['paused', 'onlyActive'], ['allTags', 'onlyTags']];
 function syncHash() {  // keep the URL fragment in step with the toggles and the search text
   const flags = ['onlyFail', 'hideAssets', 'hl', 'blast'].filter(id => box(id).checked);
+  if (box('assetLabels').checked) flags.push('names');
   // These default to on, so the hash carries their negation (conn defaults to off).
   NEG.forEach(([flag, id]) => { if (!box(id).checked) flags.push(flag); });
   if (box('conn').checked) flags.push('conn');
@@ -536,6 +601,7 @@ qEl.addEventListener('input', debounce(() => { runSearch(true); syncHash(); }, 1
 ['hideAssets', 'onlyFail', 'onlyLinked', 'onlyActive', 'onlyTags', 'conn'].forEach(id => box(id).addEventListener('change', () => { buildView(); if (!selectedId) renderSide(null); syncHash(); }));
 box('blast').addEventListener('change', () => { buildView(); if (!selectedId) renderSide(null); syncHash(); });
 box('hl').addEventListener('change', () => { applyHighlight(); syncHash(); });
+box('assetLabels').addEventListener('change', () => { updateLabels(); syncHash(); });
 box('fit').addEventListener('click', () => fitAll());
 box('showGuards').addEventListener('change', () => { refreshAdj(); buildView(); if (selectedId) renderSide(byId.get(selectedId)); syncHash(); });
 svg.on('click', ev => { if (ev.target === svg.node()) { selectedId = null; searchKeep = null; depthLimit = {up: Infinity, down: Infinity}; renderSide(null); applyHighlight(); syncHash(); } });
@@ -569,9 +635,10 @@ if (TAGS.length) box('tagLbl').textContent = 'only tags: ' + TAGS.join(', ');
 else { box('tagWrap').hidden = true; box('connWrap').hidden = true; }
 if (META.airflow_version) { box('ver').textContent = 'Airflow ' + META.airflow_version; box('ver').hidden = false; }
 
-// Hash flags: #q=<text>,onlyFail,hideAssets,hl,allLinks,paused,allTags,conn,guards,blast,sel=<node id> (any subset)
+// Hash flags: #q=<text>,onlyFail,hideAssets,names,hl,allLinks,paused,allTags,conn,guards,blast,sel=<node id> (any subset)
 const hashState = decodeHash(location.hash), flags = hashState.flags;
 ['hideAssets', 'onlyFail', 'hl', 'conn', 'blast'].forEach(id => { if (flags.includes(id)) box(id).checked = true; });
+if (flags.includes('names')) box('assetLabels').checked = true;
 if (flags.includes('guards') && !box('guardWrap').hidden) { box('showGuards').checked = true; refreshAdj(); }
 NEG.forEach(([flag, id]) => { if (flags.includes(flag)) box(id).checked = false; });
 renderSide(null);
@@ -587,6 +654,20 @@ if (hashState.q === null && hashState.sel !== null && byId.has(hashState.sel)) {
   select(id); lastTargets = [id]; initialSearch = true; pendingFit = true;  // fit to it once the layout settles
   setTimeout(() => { if (initialSearch) fitTo(lastTargets); }, 1200);
 }
+</script>
+<script>
+// Header counts as figures: "23 DAGs · 13 assets" becomes a row of number-plus-noun pairs.
+(() => {
+  const el = document.getElementById('stats');
+  const parts = el.textContent.split(' · ').map(s => s.trim()).filter(Boolean);
+  el.innerHTML = parts.map(p => {
+    const m = /^(\d[\d,]*)\s+(.*)$/.exec(p) || /^(.*?):\s*(\d[\d,]*)$/.exec(p);
+    if (!m) return `<span class="fig">${p.replace(/[&<>]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]))}</span>`;
+    const [num, noun] = /^\d/.test(m[1]) ? [m[1], m[2]] : [m[2], m[1]];
+    const bad = /failing/.test(noun) && num !== '0';
+    return `<span class="fig${bad ? ' bad' : ''}"><b>${num}</b>${noun}</span>`;
+  }).join('');
+})();
 </script>
 </body>
 </html>
