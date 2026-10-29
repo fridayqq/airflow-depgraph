@@ -18,7 +18,10 @@ escaping.
 1. **CLI present?** `airflow-depgraph --help`. If missing:
    `uv tool install git+https://github.com/fridayqq/airflow-depgraph` (or `pipx install git+…`).
    Needs Python ≥ 3.11. Airflow 2 is not supported.
-2. **Connection.** Run `airflow-depgraph presets`. A listed preset is only right if its URL is
+2. **Connection.** If the user does not want to give credentials, they can save
+   `https://<airflow>/ui/dependencies` from a logged-in browser tab as `deps.json`; `render`,
+   `downstream`, `upstream` and `report` take that file as the snapshot (no status, tags or
+   sensor links in it), so skip to step 4. Otherwise run `airflow-depgraph presets`. A listed preset is only right if its URL is
    the user's Airflow: check with `airflow-depgraph presets --preset NAME` (prints the resolved
    settings) before using it. For a one-off without a preset you need the base URL and a user name:
    `airflow-depgraph fetch --url https://airflow.example.com --user viewer --with-status -o deps.json`

@@ -187,6 +187,12 @@ def load(path: Path) -> Snapshot:
         raise SnapshotError("snapshot must be a JSON object")
 
     fmt = data.get("format")
+    if fmt is None and "nodes" in data and "edges" in data:
+        # A raw /ui/dependencies payload saved from the browser: the graph without
+        # catalog, status, tasks or inferred links.
+        nodes, edges = validate_payload(data)
+        return Snapshot(format=FORMAT, fetched_at="", source=None, airflow_version=None,
+                        nodes=nodes, edges=edges)
     if fmt != FORMAT:
         raise SnapshotError(f"snapshot format {fmt!r} is not supported (this version reads format {FORMAT})")
 

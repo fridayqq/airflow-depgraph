@@ -5,6 +5,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-10-29
+
+### Added
+- `render`, `report`, `downstream`, `upstream` and `tasks` accept the raw `/ui/dependencies` JSON saved from a logged-in browser tab, so the graph can be built without giving the tool a password. README has a *Without credentials* section.
+
+### Changed
+- README screenshot shows blast radius: the failing DAGs and everything downstream of them, with the side panel listing them.
+
 ## [0.5.2] - 2026-10-28
 
 ### Changed

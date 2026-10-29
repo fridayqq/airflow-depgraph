@@ -4,7 +4,7 @@
 
 Fetch, query and render the Airflow 3 cross-DAG dependency graph (DAG → asset / trigger / sensor → DAG) from any Airflow 3 instance. It uses only the Python standard library. The result is a JSON snapshot you can query offline, plus one self-contained HTML page.
 
-![The rendered page: a force-directed graph of DAGs and assets with status rings, a selected DAG and its downstream chain highlighted, and a side panel that lists the downstream DAGs by hop with the asset each one came through](docs/images/page.png)
+![The rendered page: a force-directed graph of DAGs and assets with status rings, blast radius on so only the two failing DAGs and everything downstream of them are shown, and a side panel that lists the failing DAGs with their downstream counts](docs/images/page.png)
 
 ![How the pieces fit: Airflow → fetch → snapshot → render → HTML, with presets and credentials feeding fetch](docs/images/overview.png)
 
@@ -62,7 +62,7 @@ Tested on Airflow 3.1.5 and 3.3.2, at the root and under a sub-path such as `/ai
 **Install on Astro.** Add one line to the project's `requirements.txt` and rebuild:
 
 ```text
-airflow-depgraph @ https://github.com/fridayqq/airflow-depgraph/archive/refs/tags/v0.5.2.tar.gz
+airflow-depgraph @ https://github.com/fridayqq/airflow-depgraph/archive/refs/tags/v0.5.3.tar.gz
 ```
 
 ```bash
@@ -183,6 +183,22 @@ The password is never accepted as a flag, so it stays out of shell history and p
 
 The user comes from `--user` or the variable named by `user_env` (`AIRFLOW_DEPGRAPH_USER` by default). A preset can only change the variable name through `user_env`, never hold the user itself. `--token-stdin` reads a bearer token from the first line of stdin and skips the login; `--token` does the same from the command line, with a warning, since it is visible in shell history and `ps`. `AIRFLOW_DEPGRAPH_TOKEN` works too. The two flags cannot be combined.
 
+
+### Without credentials
+
+The tool needs nothing beyond what the Airflow UI already shows you. If you would rather not hand it a password, save the graph from a logged-in browser tab and work offline:
+
+1. Open `https://airflow.example.com/ui/dependencies` in the browser where you are logged in to Airflow. Airflow 3 answers with the JSON its own dependencies view uses.
+2. Save it as a file, for example `deps.json`.
+3. Pass that file to any command that takes a snapshot:
+
+```bash
+airflow-depgraph render deps.json -o graph.html
+airflow-depgraph downstream my_dag deps.json
+airflow-depgraph report critical deps.json
+```
+
+Such a file holds only the nodes and edges, so the page shows the linked DAGs without status rings, the tag and paused filters and inferred sensor links. `fetch` adds those with the DAG catalog, `--with-status` and `--infer-sensors`.
 ## Exit codes
 
 | Code | Meaning |
@@ -510,7 +526,7 @@ Snapshots are JSON, format 1:
 }
 ```
 
-`dags` is optional. `catalog` is optional too: `fetch`, `graph` and the Airflow plugin fill it from one paginated `GET /api/v2/dags`, and the page filters need it. Without it (older snapshots, or a user who may not list DAGs) the page shows only linked DAGs, takes paused state from `dags`, and hides the tag filter. Catalog DAGs that are not in the graph become unlinked DAG nodes, and stale DAGs are dropped from the page. `last_run` is present with `--with-status` and `tasks` with `--with-tasks`. `inferred` is present with `--infer-sensors`: one entry per checked sensor, `source` is `rendered`, `source`, `logs` or `none` (nothing found), `kind` is `data` or `guard`. The `last_run` object is abbreviated here. Edges whose endpoints are missing from `nodes` are dropped on load.
+`dags` is optional. `catalog` is optional too: `fetch`, `graph` and the Airflow plugin fill it from one paginated `GET /api/v2/dags`, and the page filters need it. Without it (older snapshots, or a user who may not list DAGs) the page shows only linked DAGs, takes paused state from `dags`, and hides the tag filter. Catalog DAGs that are not in the graph become unlinked DAG nodes, and stale DAGs are dropped from the page. `last_run` is present with `--with-status` and `tasks` with `--with-tasks`. `inferred` is present with `--infer-sensors`: one entry per checked sensor, `source` is `rendered`, `source`, `logs` or `none` (nothing found), `kind` is `data` or `guard`. The `last_run` object is abbreviated here. Edges whose endpoints are missing from `nodes` are dropped on load. A file with `nodes` and `edges` but no `format`, as saved from `/ui/dependencies` in the browser, loads as a format 1 snapshot with nothing else in it (see *Without credentials*).
 
 ## Development
 

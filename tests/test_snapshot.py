@@ -44,6 +44,27 @@ def test_load_rejects_future_format(tmp_path):
         load(p)
 
 
+def test_load_accepts_a_raw_ui_dependencies_payload(tmp_path):
+    """The JSON a logged-in browser shows at /ui/dependencies, saved as is."""
+    p = tmp_path / "raw.json"
+    p.write_text('{"nodes": [{"id": "dag:x", "label": "x", "type": "dag"},'
+                 ' {"id": "dag:y", "label": "y", "type": "dag"}],'
+                 ' "edges": [{"source_id": "dag:x", "target_id": "dag:y"}]}')
+    snap = load(p)
+    assert snap.format == 1
+    assert [n["id"] for n in snap.nodes] == ["dag:x", "dag:y"]
+    assert snap.edges == [{"source_id": "dag:x", "target_id": "dag:y"}]
+    assert (snap.fetched_at, snap.source, snap.airflow_version) == ("", None, None)
+    assert (snap.dags, snap.catalog, snap.inferred) == (None, None, None)
+
+
+def test_load_rejects_a_raw_payload_without_edges(tmp_path):
+    p = tmp_path / "raw.json"
+    p.write_text('{"nodes": []}')
+    with pytest.raises(SnapshotError, match="format None"):
+        load(p)
+
+
 def test_dump_then_load_roundtrip(tmp_path, small_snapshot):
     p = tmp_path / "out.json"
     dump(small_snapshot, p)
