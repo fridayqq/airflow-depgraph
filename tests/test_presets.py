@@ -200,3 +200,11 @@ def test_bulk_status_defaults_on_and_env_turns_it_off():
     assert resolve({}, {}, None).bulk_status is True
     assert resolve({}, {"AIRFLOW_DEPGRAPH_BULK_STATUS": "false"}, None).bulk_status is False
     assert resolve({"bulk_status": False}, {"AIRFLOW_DEPGRAPH_BULK_STATUS": "1"}, None).bulk_status is False
+
+
+def test_resolve_tag_facet_from_env_and_file(tmp_path):
+    f = write(tmp_path / "p.toml", 'url = "https://a.example.com"\ntag_facet = "vertical:"\n')
+    assert resolve({}, {}, str(f)).tag_facet == "vertical:"
+    assert resolve({}, {"AIRFLOW_DEPGRAPH_TAG_FACET": "team:"}, str(f)).tag_facet == "team:"
+    assert resolve({"tag_facet": "env:"}, {"AIRFLOW_DEPGRAPH_TAG_FACET": "team:"}, str(f)).tag_facet == "env:"
+    assert resolve({}, {}, None).tag_facet is None

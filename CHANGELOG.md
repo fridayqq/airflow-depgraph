@@ -5,6 +5,9 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Facet chips: tags of one family, such as `vertical:Sales`, become chips in the header. Any of the chosen values lights a DAG, the rest dims but stays, and the side panel sums up the choice and the links to other values. Preset key `tag_facet` (`--tag-facet`, `AIRFLOW_DEPGRAPH_TAG_FACET`), detected when unset; hash `v=`.
+
 ## [0.6.0] - 2026-10-29
 
 ### Changed

@@ -35,6 +35,10 @@ name = "example"
 # Legend label for the highlighted nodes.
 # highlight_label = "Highlight"
 
+# Tag prefix shown as chips on the page: with "vertical:" a tag vertical:Sales makes a Sales chip.
+# Unset, the page picks the prefix with the most DAGs on its own.
+# tag_facet = "vertical:"
+
 # Regex that marks a task as a test task.
 # Matches dbt-test-x, dbt_tasks.dbt-test-x, test_models, run_tests (case-insensitive).
 # tests_task_regex = '(^|[._-])tests?([._-]|$)'

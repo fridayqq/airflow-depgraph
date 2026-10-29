@@ -60,6 +60,18 @@ header button, aside button, #filtersBtn {
 header button:hover, aside button:hover { background: var(--acc-soft); border-color: var(--acc); }
 #filtersBtn { display: none; }
 
+/* Facet chips: one tag family, any of the chosen values lights a DAG. */
+.facet { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 20px 8px; }
+.facet .gl { color: var(--mut); font-size: 11.5px; font-weight: 500; margin-right: 4px; }
+.chip {
+  font: inherit; display: inline-flex; align-items: baseline; gap: 6px; padding: 3px 10px; border: 1px solid var(--line);
+  border-radius: 999px; background: var(--panel); color: var(--mut); cursor: pointer; transition: border-color .15s, background .15s;
+}
+.chip b { font-weight: 500; font-size: 11px; color: var(--mut); }
+.chip:hover { border-color: var(--acc); color: var(--fg); }
+.chip.on { background: var(--acc-soft); border-color: var(--acc); color: var(--fg); }
+.chip.on b { color: var(--acc); }
+
 /* Switches, grouped by what they do to the picture. */
 .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; padding: 0 20px 10px; }
 .group { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; }
@@ -141,6 +153,7 @@ aside a { color: var(--acc); }
   aside { border-left: 0; border-top: 1px solid var(--line); }
   .bar { flex-wrap: wrap; gap: 8px 12px; padding: 10px 14px 0; }
   .figures { padding: 4px 14px 8px; }
+  .facet { padding: 0 14px 8px; }
   .cmd { flex: 1 1 100%; margin-left: 0; }
   #filtersBtn { display: inline-block; }
   header .filters { display: none; }
@@ -164,6 +177,7 @@ aside a { color: var(--acc); }
     <span class="st" id="shown"></span>
     <span class="st" id="ver" hidden></span>
   </div>
+  <div class="facet" id="facet" hidden></div>
   <div class="filters" id="filters">
   <span class="group"><span class="gl">Show</span>
   <label class="t"><input type="checkbox" id="onlyLinked" checked> linked DAGs only</label>
@@ -238,6 +252,30 @@ let focusKeep = null, pendingFit = false, initialSearch = false;  // focusKeep: 
 function r(n) { return n.type === 'dag' ? 4 + Math.sqrt(n.down) * 2.2 : 3.5; }
 
 const TAGS = META.catalog === false ? [] : (META.tags || []);  // no catalog: no tags to filter on
+// Facet chips: one tag family such as vertical:<name>, from the preset's tag_facet or detected.
+// A DAG is lit when it carries any of the chosen values; links stay lit next to a lit DAG.
+const FACET = (() => {
+  if (META.catalog === false) return null;
+  const f = facetOf(DATA.nodes, META.tag_facet || detectFacet(DATA.nodes));
+  return f && f.values.length >= 2 ? f : null;
+})();
+const facetSel = new Set();
+let facetBright = new Set();
+const inFacet = d => d.type === 'dag' && (d.tags || []).some(t => t.startsWith(FACET.prefix) && facetSel.has(t.slice(FACET.prefix.length)));
+const facetValues = d => (d.tags || []).filter(t => t.startsWith(FACET.prefix)).map(t => t.slice(FACET.prefix.length));
+function renderFacet() {
+  const el = box('facet');
+  if (!FACET) { el.hidden = true; return; }
+  el.hidden = false;
+  el.innerHTML = `<span class="gl">${esc(FACET.prefix.replace(/[:\s]+$/, ''))}</span>` +
+    `<button type="button" class="chip${facetSel.size ? '' : ' on'}" data-v="">All</button>` +
+    FACET.values.map(v => `<button type="button" class="chip${facetSel.has(v.name) ? ' on' : ''}" data-v="${esc(v.name)}">${esc(v.name)}<b>${v.count}</b></button>`).join('');
+  el.querySelectorAll('button').forEach(b => b.onclick = () => {
+    const v = b.dataset.v;
+    if (!v) facetSel.clear(); else if (facetSel.has(v)) facetSel.delete(v); else facetSel.add(v);
+    renderFacet(); applyHighlight(); if (!selectedId) renderSide(null); syncHash();
+  });
+}
 const hasTag = n => tagged(n, TAGS);
 const loose = n => looseNode(n, box('showGuards').checked);
 
@@ -342,7 +380,8 @@ const ZOOM_LABELS = 1.8;
 const BIG_GRAPH = 800;   // nodes; above this the layout is pre-computed and settles faster
 function updateLabels() {
   const k = scale();  // label text and halo stay 10 and 3 screen pixels whatever the zoom
-  const labels = root.selectAll('g.labels text.lbl').style('font-size', `${10 / k}px`).style('stroke-width', `${3 / k}px`);
+  const labels = root.selectAll('g.labels text.lbl').style('font-size', `${10 / k}px`).style('stroke-width', `${3 / k}px`)
+    .style('opacity', d => (FACET && facetSel.size && !facetBright.has(d.id)) ? .3 : 1);
   labels.attr('display', d => {
     const inFocus = d.id === selectedId || (focusKeep && focusKeep.has(d.id));
     const dag = d.type === 'dag' && (SMALL || d.down >= 5 || failing(d) || k >= ZOOM_LABELS);
@@ -449,6 +488,21 @@ function wireRows(root) {
 function renderEmpty(msg) {
   let html = `<h2>${esc(msg || 'Click a node')}</h2>`;
   if (!msg) html += `<p class="hint">Node size shows how many DAGs depend on it, transitively. Click to highlight everything upstream and downstream. Double-click pins or releases a node. Scroll to zoom, drag to pan.<br><br>Search: <code>dag</code> focuses the first match, <code>+dag</code> adds its upstream, <code>dag+</code> its downstream, <code>2+dag+3</code> limits the depth.</p>`;
+  if (FACET && facetSel.size) {
+    // The chosen values: DAGs on screen, failures, and the DAGs of other values they link to.
+    const mine = nodes.filter(inFacet), bad = mine.filter(failing).length;
+    const outside = new Map();
+    mine.forEach(d => neighbours(d.id, {out: outM, inn: inM}, byId).forEach(x => {
+      const n = byId.get(x);
+      if (!n || n.type !== 'dag' || inFacet(n)) return;
+      const vals = facetValues(n);
+      (vals.length ? vals : ['no ' + FACET.prefix.replace(/[:\s]+$/, '')]).forEach(v => { if (!outside.has(v)) outside.set(v, new Set()); outside.get(v).add(x); });
+    }));
+    html += `<h3>${esc([...facetSel].join(', '))}</h3><p>${plural(mine.length, 'DAG', 'DAGs')} on screen${bad ? `, <b>${plural(bad, 'failing', 'failing')}</b>` : ''}.</p>`;
+    const rows = [...outside].sort((a, b) => b[1].size - a[1].size || a[0].localeCompare(b[0]))
+      .map(([v, s]) => `<li>${esc(v)} <span class="hint">· ${plural(s.size, 'linked DAG', 'linked DAGs')}</span></li>`).join('');
+    html += '<h4>Linked across</h4>' + (rows ? `<ul>${rows}</ul>` : '<p class="hint">none</p>');
+  }
   if (box('blast').checked) {
     const failingDags = DATA.nodes.filter(n => n.type === 'dag' && failing(n) && passesDagFilters(n)).sort((a, b) => b.down - a.down || a.label.localeCompare(b.label));
     html += `<h3>Failing DAGs (${failingDags.length})</h3><ul>` + failingDags.map(n =>
@@ -522,10 +576,18 @@ function applyHighlight() {
   focusKeep = keep;
   const lit = d => hl && d.hl;
   const outline = d => d.inferred ? css(d.kind === 'guard' ? '--guard' : '--c-sensor') : null;
-  root.selectAll('g.n').style('opacity', d => (keep && !keep.has(d.id)) ? .12 : 1)
+  const facetOn = !!(FACET && facetSel.size);
+  facetBright = new Set();
+  if (facetOn) {
+    nodes.forEach(d => { if (inFacet(d)) facetBright.add(d.id); });
+    nodes.forEach(d => { if (isLinkNode(d) && neighbours(d.id, {out: outM, inn: inM}, byId).some(x => facetBright.has(x))) facetBright.add(d.id); });
+  }
+  const dim = d => facetOn && !facetBright.has(d.id);
+  root.selectAll('g.n').style('opacity', d => (keep && !keep.has(d.id)) ? .12 : (dim(d) ? .18 : 1))
     .each(function (d) { d3.select(this).select('circle,rect,path').attr('stroke', lit(d) ? css('--fg') : outline(d)).attr('stroke-width', lit(d) ? 2 : (d.inferred ? 1.5 : null)); });
-  root.selectAll('line').style('opacity', l => keep ? ((keep.has(l.source.id) && keep.has(l.target.id)) ? .9 : .05) : .6)
-    .attr('stroke', l => keep && keep.has(l.source.id) && keep.has(l.target.id) ? css('--acc') : css(l.guard ? '--guard' : '--edge'));
+  const both = (l, set) => set.has(l.source.id) && set.has(l.target.id);
+  root.selectAll('line').style('opacity', l => keep ? (both(l, keep) ? .9 : .05) : (facetOn ? (both(l, facetBright) ? .7 : .08) : .6))
+    .attr('stroke', l => keep && both(l, keep) ? css('--acc') : css(l.guard ? '--guard' : '--edge'));
   updateLabels();
 }
 
@@ -589,7 +651,7 @@ function syncHash() {  // keep the URL fragment in step with the toggles and the
   NEG.forEach(([flag, id]) => { if (!box(id).checked) flags.push(flag); });
   if (box('conn').checked) flags.push('conn');
   if (box('showGuards').checked) flags.push('guards');
-  const hash = encodeHash({q: qEl.value.trim(), flags, sel: selectedId});
+  const hash = encodeHash({q: qEl.value.trim(), flags, v: FACET ? [...facetSel] : [], sel: selectedId});
   try { history.replaceState(null, '', hash ? '#' + hash : location.pathname + location.search); } catch (e) { /* file:// or sandboxed */ }
 }
 // Runs fn once the calls stop for ms (the search box).
@@ -635,14 +697,17 @@ if (TAGS.length) box('tagLbl').textContent = 'only tags: ' + TAGS.join(', ');
 else { box('tagWrap').hidden = true; box('connWrap').hidden = true; }
 if (META.airflow_version) { box('ver').textContent = 'Airflow ' + META.airflow_version; box('ver').hidden = false; }
 
-// Hash flags: #q=<text>,onlyFail,hideAssets,names,hl,allLinks,paused,allTags,conn,guards,blast,sel=<node id> (any subset)
+// Hash flags: #q=<text>,onlyFail,hideAssets,names,hl,allLinks,paused,allTags,conn,guards,blast,v=<facet values>,sel=<node id> (any subset)
 const hashState = decodeHash(location.hash), flags = hashState.flags;
 ['hideAssets', 'onlyFail', 'hl', 'conn', 'blast'].forEach(id => { if (flags.includes(id)) box(id).checked = true; });
 if (flags.includes('names')) box('assetLabels').checked = true;
 if (flags.includes('guards') && !box('guardWrap').hidden) { box('showGuards').checked = true; refreshAdj(); }
 NEG.forEach(([flag, id]) => { if (flags.includes(flag)) box(id).checked = false; });
+if (FACET) hashState.v.forEach(v => { if (FACET.values.some(x => x.name === v)) facetSel.add(v); });
+renderFacet();
 renderSide(null);
 buildView();
+if (facetSel.size) renderSide(null);  // the facet summary counts drawn nodes
 if (hashState.q !== null) {
   qEl.value = hashState.q;
   runSearch(false);

@@ -106,14 +106,51 @@ test('encodeHash and decodeHash round-trip', () => {
   const state = {q: 'dag_a+', flags: ['onlyFail', 'hl', 'allLinks', 'conn'], sel: 'dag:x y'};
   const str = core.encodeHash(state);
   assert.equal(str, 'q=dag_a%2B,onlyFail,hl,allLinks,conn,sel=dag%3Ax%20y');
-  assert.deepEqual(core.decodeHash('#' + str), {q: 'dag_a+', flags: ['onlyFail', 'hl', 'allLinks', 'conn'], sel: 'dag:x y'});
+  assert.deepEqual(core.decodeHash('#' + str), {q: 'dag_a+', flags: ['onlyFail', 'hl', 'allLinks', 'conn'], v: [], sel: 'dag:x y'});
   assert.equal(core.encodeHash(core.decodeHash('#' + str)), str);
   assert.equal(core.encodeHash({q: '', flags: [], sel: null}), '');
 });
 
+test('hash carries the chosen facet values, commas and bars included', () => {
+  const str = core.encodeHash({q: '', flags: ['blast'], v: ['Customer & Booking', 'a,b|c'], sel: null});
+  assert.equal(str, 'blast,v=Customer%20%26%20Booking|a%2Cb%7Cc');
+  assert.deepEqual(core.decodeHash(str).v, ['Customer & Booking', 'a,b|c']);
+  assert.deepEqual(core.decodeHash('v=').v, []);
+});
+
+test('facetOf counts the values of one tag prefix among DAGs, most first', () => {
+  const nodes = [
+    {id: 'dag:a', type: 'dag', tags: ['vertical:Sales', 'prod']},
+    {id: 'dag:b', type: 'dag', tags: ['vertical:Sales', 'vertical:Finance']},
+    {id: 'dag:c', type: 'dag', tags: ['vertical:Finance']},
+    {id: 'dag:d', type: 'dag', tags: ['vertical:Ops', 'vertical:']},
+    {id: 'asset:1', type: 'asset', tags: ['vertical:Sales']},
+  ];
+  assert.deepEqual(core.facetOf(nodes, 'vertical:'), {prefix: 'vertical:', values: [
+    {name: 'Finance', count: 2}, {name: 'Sales', count: 2}, {name: 'Ops', count: 1}]});
+  assert.equal(core.facetOf(nodes, ''), null);
+});
+
+test('detectFacet picks the colon prefix with at least two values and the most DAGs', () => {
+  const nodes = [
+    {id: 'dag:a', type: 'dag', tags: ['vertical:Sales', 'team:x', 'prod']},
+    {id: 'dag:b', type: 'dag', tags: ['vertical:Finance', 'team:x']},
+    {id: 'dag:c', type: 'dag', tags: ['team:x', 'env:prod']},
+    {id: 'dag:d', type: 'dag', tags: ['env:uat', ':odd', 'trailing:']},
+  ];
+  assert.equal(core.detectFacet(nodes), 'env:');     // team: has one value; env: and vertical: tie on 2 DAGs and 2 values, env: sorts first
+  const tied = [
+    {id: 'dag:a', type: 'dag', tags: ['vertical:Sales', 'subvertical:Web']},
+    {id: 'dag:b', type: 'dag', tags: ['vertical:Sales', 'subvertical:Shop']},
+    {id: 'dag:c', type: 'dag', tags: ['vertical:Finance', 'subvertical:Ledger']},
+  ];
+  assert.equal(core.detectFacet(tied), 'vertical:');  // same DAGs, fewer values wins
+  assert.equal(core.detectFacet([{id: 'dag:a', type: 'dag', tags: ['prod']}]), null);
+});
+
 test('decodeHash keeps a broken value raw and reads no flags from an empty hash', () => {
   assert.equal(core.decodeHash('#q=bad%ZZ').q, 'bad%ZZ');
-  assert.deepEqual(core.decodeHash(''), {q: null, flags: [], sel: null});
+  assert.deepEqual(core.decodeHash(''), {q: null, flags: [], v: [], sel: null});
 });
 
 test('plural', () => {

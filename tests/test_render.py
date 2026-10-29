@@ -252,3 +252,8 @@ def test_page_core_is_inlined_before_the_page_script(small_snapshot):
     core = html.index("function filterView(")
     assert core < html.index("const SEARCH_RE = /")
     assert "__CORE__" not in html
+
+
+def test_meta_carries_the_tag_facet(small_snapshot):
+    assert '"tag_facet": "vertical:"' in render(small_snapshot, Settings(tag_facet="vertical:"))
+    assert '"tag_facet": null' in render(small_snapshot, Settings())

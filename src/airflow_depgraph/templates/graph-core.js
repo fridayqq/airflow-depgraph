@@ -129,21 +129,64 @@ function encodeHash(state) {
   const parts = [];
   if (state.q) parts.push('q=' + encodeURIComponent(state.q));
   parts.push(...(state.flags || []));
+  if (state.v && state.v.length) parts.push('v=' + state.v.map(encodeURIComponent).join('|'));
   if (state.sel) parts.push('sel=' + encodeURIComponent(state.sel));
   return parts.join(',');
 }
 
-// Inverse of encodeHash: {q, sel} (null when absent) and the other tokens as flags. A value that
-// does not decode is kept raw.
+// Inverse of encodeHash: {q, sel} (null when absent), v (the chosen facet values) and the other
+// tokens as flags. A value that does not decode is kept raw.
 function decodeHash(str) {
   const safe = s => { try { return decodeURIComponent(s); } catch (e) { return s; } };
-  const out = {q: null, flags: [], sel: null};
+  const out = {q: null, flags: [], v: [], sel: null};
   for (const t of String(str || '').replace(/^#/, '').split(',').filter(Boolean)) {
     if (t.startsWith('q=')) out.q = safe(t.slice(2));
     else if (t.startsWith('sel=')) out.sel = safe(t.slice(4));
+    else if (t.startsWith('v=')) out.v = t.slice(2).split('|').filter(Boolean).map(safe);
     else out.flags.push(t);
   }
   return out;
+}
+
+// A tag facet: tags shaped "<prefix><value>", e.g. vertical:Sales. facetOf lists the values among
+// the DAG nodes with how many DAGs carry each, most first. detectFacet picks the prefix (up to and
+// including the first ":") that has at least two values and covers the most DAGs; on a tie the one
+// with fewer values (vertical: over subvertical:), then the first by name; null when there is none.
+function facetOf(nodes, prefix) {
+  if (!prefix) return null;
+  const counts = new Map();
+  for (const n of nodes) {
+    if (n.type !== 'dag') continue;
+    for (const t of n.tags || []) {
+      if (!t.startsWith(prefix) || t.length === prefix.length) continue;
+      const v = t.slice(prefix.length);
+      counts.set(v, (counts.get(v) || 0) + 1);
+    }
+  }
+  const values = [...counts].map(([name, count]) => ({name, count}))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  return {prefix, values};
+}
+function detectFacet(nodes) {
+  const seen = new Map();  // prefix -> {dags: Set, values: Set}
+  for (const n of nodes) {
+    if (n.type !== 'dag') continue;
+    for (const t of n.tags || []) {
+      const i = t.indexOf(':');
+      if (i <= 0 || i === t.length - 1) continue;
+      const p = t.slice(0, i + 1);
+      if (!seen.has(p)) seen.set(p, {dags: new Set(), values: new Set()});
+      seen.get(p).dags.add(n.id);
+      seen.get(p).values.add(t.slice(i + 1));
+    }
+  }
+  let best = null;
+  for (const [p, s] of seen) {
+    if (s.values.size < 2) continue;
+    const better = !best || s.dags.size > best.n || (s.dags.size === best.n && (s.values.size < best.v || (s.values.size === best.v && p < best.p)));
+    if (better) best = {p, n: s.dags.size, v: s.values.size};
+  }
+  return best ? best.p : null;
 }
 
 // "[N+]text[+[N]]": leading +/digits = upstream (depth), trailing +/digits = downstream. No "+" = plain
@@ -159,5 +202,5 @@ function parseQuery(raw, re) {
 
 if (typeof module !== 'undefined') {
   module.exports = {plural, failing, tagged, looseNode, isLinkNode, buildAdj, reach, chain, neighbours,
-    filterView, collapseLinks, encodeHash, decodeHash, parseQuery};
+    filterView, collapseLinks, encodeHash, decodeHash, parseQuery, facetOf, detectFacet};
 }

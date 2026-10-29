@@ -53,7 +53,7 @@ _AUTH_PATHS = ("/auth/token", "/ui/dependencies")
 
 def _settings(args: argparse.Namespace) -> Settings:
     cli = {k: getattr(args, k, None)
-           for k in ("url", "user", "token", "with_status", "with_tasks", "title", "highlight",
+           for k in ("url", "user", "token", "with_status", "with_tasks", "title", "highlight", "tag_facet",
                      "infer_sensors", "timeout", "workers", "bulk_status",
                      "user_env", "password_env", "password_cmd")}
     if getattr(args, "tags", None):
@@ -459,7 +459,7 @@ def cmd_presets(args: argparse.Namespace) -> int:
 def _init_given(args: argparse.Namespace) -> dict:
     return {k: getattr(args, k) for k in (
         "name", "url", "user_env", "password_env", "password_cmd", "tags", "strip_prefix",
-        "highlight", "highlight_label", "title", "with_status", "infer_sensors",
+        "highlight", "highlight_label", "tag_facet", "title", "with_status", "infer_sensors",
         "tests_task_regex", "task_query_regex", "lookback", "timeout", "workers")}
 
 
@@ -602,6 +602,9 @@ def _parser() -> argparse.ArgumentParser:
     render_opts.add_argument("--title", help="title of the rendered page")
     render_opts.add_argument("--highlight", help="regex of DAG ids to highlight "
                              "(matched against ids without the dag: prefix)")
+    render_opts.add_argument("--tag-facet", metavar="PREFIX",
+                             help="tag prefix shown as chips on the page, e.g. 'vertical:' "
+                                  "(default: the prefix with the most DAGs)")
     render_opts.add_argument("--status", metavar="FILE",
                              help="JSON {dag_id: {kind, paused, date}} that overrides the snapshot status")
 
@@ -736,6 +739,8 @@ def _parser() -> argparse.ArgumentParser:
     ini.add_argument("--strip-prefix", help="prefix removed from asset labels")
     ini.add_argument("--highlight", help="regex of DAG ids to highlight")
     ini.add_argument("--highlight-label", help="legend label for the highlighted DAGs")
+    ini.add_argument("--tag-facet", metavar="PREFIX",
+                     help="tag prefix shown as chips on the page, e.g. 'vertical:'")
     ini.add_argument("--title", help="title of the rendered page")
     ini.add_argument("--with-status", dest="with_status", action="store_true", default=None,
                      help="fetch the run status of every DAG")

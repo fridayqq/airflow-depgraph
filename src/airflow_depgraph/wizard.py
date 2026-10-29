@@ -37,6 +37,7 @@ _EXAMPLES = {
     "url": "https://airflow.example.com",
     "password_cmd": "pass show airflow/prod",
     "asset_label_strip_prefix": "s3://example-bucket/",
+    "tag_facet": "vertical:",
     "highlight": "^example_",
     "task_query_regex": "^(extract|load)_",
     "tags": ["team-a"],
@@ -55,6 +56,8 @@ _DOC: list[tuple[str, list[str]]] = [
     ("highlight", ["Regex matched against DAG ids (without the dag: prefix); matching DAG nodes "
                    "are highlighted.", "Assets, triggers and sensors are never highlighted."]),
     ("highlight_label", ["Legend label for the highlighted nodes."]),
+    ("tag_facet", ["Tag prefix shown as chips on the page: with \"vertical:\" a tag vertical:Sales makes a "
+                   "Sales chip.", "Unset, the page picks the prefix with the most DAGs on its own."]),
     ("tests_task_regex", ["Regex that marks a task as a test task.",
                           "Matches dbt-test-x, dbt_tasks.dbt-test-x, test_models, run_tests "
                           "(case-insensitive)."]),
@@ -348,7 +351,7 @@ def build_values(name: str, url: str, chosen: Mapping[str, object]) -> dict:
     values["with_status"] = bool(chosen.get("with_status"))
     values["infer_sensors"] = bool(chosen.get("infer_sensors"))
     renames = {"strip_prefix": "asset_label_strip_prefix", "lookback": "status_runs_lookback"}
-    for key in ("tags", "title", "strip_prefix", "highlight", "highlight_label",
+    for key in ("tags", "title", "strip_prefix", "highlight", "highlight_label", "tag_facet",
                 "tests_task_regex", "task_query_regex", "lookback", "timeout", "workers"):
         v = chosen.get(key)
         if v is None or v == [] or v == "":

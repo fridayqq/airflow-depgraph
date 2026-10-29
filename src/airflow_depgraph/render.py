@@ -164,7 +164,8 @@ def render(snap: Snapshot, s: Settings, status_override: dict | None = None, *,
     """Header gets "sensor links: N[, updated <inferred_updated>]"; inferred_note replaces it."""
     view = build_view(snap, s, status_override)
     meta = {"source": snap.source, "airflow_version": snap.airflow_version, "tags": list(s.tags),
-            "catalog": snap.catalog is not None, "snapshot": snap.fetched_at or None}
+            "tag_facet": s.tag_facet, "catalog": snap.catalog is not None,
+            "snapshot": snap.fetched_at or None}
     data = {**view, "meta": meta}
     values = {
         "TITLE": html.escape(s.title),

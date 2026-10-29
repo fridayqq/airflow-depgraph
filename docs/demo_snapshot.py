@@ -14,6 +14,9 @@ import sys
 FETCHED = "2026-10-28T06:00:00Z"
 TEAMS = {"orders": "team-orders", "customers": "team-customers", "finance": "team-finance",
          "marketing": "team-marketing"}
+VERTICAL = {"orders": "Commerce", "customers": "Customer", "finance": "Finance", "marketing": "Marketing"}
+EXTRA_VERTICALS = {"exec_dashboard_report": ["Commerce", "Customer"], "churn_report": ["Marketing"],
+                   "attribution_model": ["Commerce"]}
 
 # (dag_id, teams, cron, outlets)  cron None → asset-driven
 PIPELINES = [
@@ -82,6 +85,8 @@ for dag_id, teams, cron, outlets in PIPELINES:
     consumed = CONSUMES.get(dag_id, [])
     schedule = "Asset" if consumed and not cron else (f"Asset or {cron}" if consumed else cron)
     tags = [TEAMS[t] for t in teams] + (["reporting"] if dag_id.endswith("_report") else [])
+    verticals = [VERTICAL[t] for t in teams] + EXTRA_VERTICALS.get(dag_id, [])
+    tags += [f"vertical:{v}" for v in dict.fromkeys(verticals)]
     owners = [TEAMS[teams[0]]] if teams else ["platform"]
     catalog[dag_id] = {"tags": tags, "is_paused": dag_id in PAUSED, "is_stale": False,
                        "schedule": schedule, "owners": owners}
