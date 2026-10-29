@@ -4,7 +4,7 @@
 
 Fetch, query and render the Airflow 3 cross-DAG dependency graph (DAG → asset / trigger / sensor → DAG) from any Airflow 3 instance. It uses only the Python standard library. The result is a JSON snapshot you can query offline, plus one self-contained HTML page.
 
-![The rendered page: a force-directed graph of DAGs and assets with status rings, blast radius on so only the two failing DAGs and everything downstream of them are shown, and a side panel that lists the failing DAGs with their downstream counts](docs/images/page.png)
+![The rendered page: a force-directed graph of DAGs and assets with status rings on a gridded canvas, a header with counts, vertical chips and switches, and the side panel with the usage hints](docs/images/page.png)
 
 ![How the pieces fit: Airflow → fetch → snapshot → render → HTML, with presets and credentials feeding fetch](docs/images/overview.png)
 

@@ -1,8 +1,8 @@
 """Write the fictional snapshot behind the README screenshot: python3 docs/demo_snapshot.py demo.json
 
 Screenshot: AIRFLOW_DEPGRAPH_HIGHLIGHT_LABEL=Reports airflow-depgraph render demo.json \
---highlight '_report$' -o demo.html, open it in a window about 1420x750, switch off
-"only linked DAGs", switch on "blast radius", press Fit, nothing selected.
+--highlight '_report$' -o demo.html, open it in a window about 1420x750, press Fit, nothing
+selected and no chip chosen.
 """
 
 from __future__ import annotations
