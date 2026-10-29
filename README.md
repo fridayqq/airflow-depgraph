@@ -62,7 +62,7 @@ Tested on Airflow 3.1.5 and 3.3.2, at the root and under a sub-path such as `/ai
 **Install on Astro.** Add one line to the project's `requirements.txt` and rebuild:
 
 ```text
-airflow-depgraph @ https://github.com/fridayqq/airflow-depgraph/archive/refs/tags/v0.5.4.tar.gz
+airflow-depgraph @ https://github.com/fridayqq/airflow-depgraph/archive/refs/tags/v0.6.0.tar.gz
 ```
 
 ```bash

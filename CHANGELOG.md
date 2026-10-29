@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-29
+
 ### Changed
 - The page is restyled: a gridded drafting surface for the graph, a three-row header (title and search, counts as figures, switches grouped into *Show* and *Focus*), and a side panel that lists the chain hop by hop on a rail. Dark mode follows the same scheme. No external fonts or requests; the logic is unchanged.
 
