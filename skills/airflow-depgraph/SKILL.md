@@ -18,10 +18,20 @@ escaping.
 1. **CLI present?** `airflow-depgraph --help`. If missing:
    `uv tool install git+https://github.com/fridayqq/airflow-depgraph` (or `pipx install git+…`).
    Needs Python ≥ 3.11. Airflow 2 is not supported.
-2. **Connection.** If the user does not want to give credentials, they can save
-   `https://<airflow>/ui/dependencies` from a logged-in browser tab as `deps.json`; `render`,
-   `downstream`, `upstream` and `report` take that file as the snapshot (no status, tags or
-   sensor links in it), so skip to step 4. Otherwise run `airflow-depgraph presets`. A listed preset is only right if its URL is
+2. **Connection.** Credentials in this order of preference; a token always wins over a
+   user and password when both are present.
+   - **Token.** If `AIRFLOW_DEPGRAPH_TOKEN` is set, or the user can give a token, use it:
+      every command takes `--url U` with the token from the environment or `--token-stdin`
+      (`pass show airflow/token | airflow-depgraph fetch --url U --token-stdin …`). No login
+      call is made; status, catalog and sensor inference all work. The token is the JWT the
+      browser keeps in the `_token` cookie after login (DevTools, Application/Storage, Cookies),
+      or the `access_token` from `POST U/auth/token` with `{"username", "password"}`. It
+      expires after the time the admin set (a day by default); a 401 (exit code 2) means get
+      a fresh one. Never write the token into a command, file, preset or chat reply.
+   - **No credentials at all.** The user saves `U/ui/dependencies` from a logged-in browser
+      tab as `deps.json`; `render`, `downstream`, `upstream` and `report` take that file as the
+      snapshot (no status, tags or sensor links in it), so skip to step 4.
+   - **User and password.** Run `airflow-depgraph presets`. A listed preset is only right if its URL is
    the user's Airflow: check with `airflow-depgraph presets --preset NAME` (prints the resolved
    settings) before using it. For a one-off without a preset you need the base URL and a user name:
    `airflow-depgraph fetch --url https://airflow.example.com --user viewer --with-status -o deps.json`

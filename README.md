@@ -181,7 +181,7 @@ The password is never accepted as a flag, so it stays out of shell history and p
 3. The command in `password_cmd` (`init` writes `password_env = ""` when the command is the only source, so the variable lookup is skipped), for example `pass show airflow/example`, taking its stdout.
 4. An interactive prompt, when stdin is a terminal.
 
-The user comes from `--user` or the variable named by `user_env` (`AIRFLOW_DEPGRAPH_USER` by default). A preset can only change the variable name through `user_env`, never hold the user itself. `--token-stdin` reads a bearer token from the first line of stdin and skips the login; `--token` does the same from the command line, with a warning, since it is visible in shell history and `ps`. `AIRFLOW_DEPGRAPH_TOKEN` works too. The two flags cannot be combined.
+The user comes from `--user` or the variable named by `user_env` (`AIRFLOW_DEPGRAPH_USER` by default). A preset can only change the variable name through `user_env`, never hold the user itself. A bearer token takes precedence over all of the above and skips the login: `--token-stdin` reads it from the first line of stdin; `--token` does the same from the command line, with a warning, since it is visible in shell history and `ps`. `AIRFLOW_DEPGRAPH_TOKEN` works too. The two flags cannot be combined. The token is the JWT Airflow keeps in the browser's `_token` cookie after login (DevTools, Application or Storage, Cookies), or the `access_token` returned by `POST /auth/token` with a JSON body `{"username": …, "password": …}`. It expires after `[api_auth] jwt_expiration_time`, a day by default; after that every call gets a 401 and exit code 2.
 
 
 ### Without credentials

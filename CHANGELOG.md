@@ -5,6 +5,9 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- Skill and README: a bearer token is the preferred credential and takes precedence over user and password; where to get one and how long it lives.
+
 ## [0.5.3] - 2026-10-29
 
 ### Added
