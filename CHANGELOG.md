@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-10-29
+
 ### Added
 - README, *Get a token from the browser*: how to copy the `_token` cookie from DevTools, with a screenshot, and pass it with `AIRFLOW_DEPGRAPH_TOKEN` or `--token-stdin`.
 - The CLI points at that route: the "no username" and "no password" errors mention it, a rejected login or token prints a `hint:` line, and `init` says that a token skips the password at run time.
