@@ -669,7 +669,8 @@ def _ask_password_source(p: Prompter, given: Mapping[str, object], chosen: dict,
                   "     security find-generic-password -s airflow -w\n"
                   "     op read op://vault/airflow/password")
             chosen["password_cmd"] = p.ask("Command that prints the password")
-    p.dim("The password itself is never stored.")
+    p.dim("The password itself is never stored. At run time a token in AIRFLOW_DEPGRAPH_TOKEN\n"
+          "     skips the password (README, \"Get a token from the browser\").")
 
 
 def _sign_in(p: Prompter, s: Settings, env: Mapping[str, str], client_cls):

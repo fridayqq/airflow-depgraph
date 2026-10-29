@@ -13,10 +13,15 @@ class CredentialsError(RuntimeError):
     pass
 
 
+TOKEN_HINT = ("a token needs neither: take the _token cookie from the browser "
+              "(README, \"Get a token from the browser\") and set AIRFLOW_DEPGRAPH_TOKEN "
+              "or use --token-stdin")
+
+
 def resolve_user(s: Settings, env: Mapping[str, str]) -> str:
     user = s.user or env.get(s.user_env)
     if not user:
-        raise CredentialsError(f"no username: pass --user or set ${s.user_env}")
+        raise CredentialsError(f"no username: pass --user or set ${s.user_env}; {TOKEN_HINT}")
     return user
 
 
@@ -46,5 +51,5 @@ def resolve_password(
     source = f"set ${s.password_env}, " if s.password_env else ""
     raise CredentialsError(
         f"no password: use --password-stdin, {source}set password_cmd in the preset, "
-        "or run on a TTY for an interactive prompt"
+        f"or run on a TTY for an interactive prompt; {TOKEN_HINT}"
     )

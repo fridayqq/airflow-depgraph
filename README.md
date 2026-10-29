@@ -184,6 +184,27 @@ The password is never accepted as a flag, so it stays out of shell history and p
 The user comes from `--user` or the variable named by `user_env` (`AIRFLOW_DEPGRAPH_USER` by default). A preset can only change the variable name through `user_env`, never hold the user itself. A bearer token takes precedence over all of the above and skips the login: `--token-stdin` reads it from the first line of stdin; `--token` does the same from the command line, with a warning, since it is visible in shell history and `ps`. `AIRFLOW_DEPGRAPH_TOKEN` works too. The two flags cannot be combined. The token is the JWT Airflow keeps in the browser's `_token` cookie after login (DevTools, Application or Storage, Cookies), or the `access_token` returned by `POST /auth/token` with a JSON body `{"username": …, "password": …}`. It expires after `[api_auth] jwt_expiration_time`, a day by default; after that every call gets a 401 and exit code 2.
 
 
+### Get a token from the browser
+
+The quickest way to use the tool, and the only one when you log in to Airflow through SSO and have no API password. The token is the JWT that Airflow keeps in a cookie after you log in.
+
+![DevTools, Application tab, Cookies, the Airflow origin: one row named _token, selected, with its full value in the Cookie Value box below](docs/images/token-cookie.png)
+
+1. Log in to Airflow in your browser as usual.
+2. Open DevTools: F12, or ⌥⌘I on a Mac.
+3. Open the *Application* tab (Firefox and Safari: *Storage*), expand *Cookies* on the left and click your Airflow origin.
+4. Click the row named `_token`. The full value appears in the *Cookie Value* box; copy it from there (the value in the table is cut off).
+5. Give it to the tool, and nothing else is needed:
+
+```bash
+export AIRFLOW_DEPGRAPH_TOKEN='eyJ…'
+airflow-depgraph graph --url https://airflow.example.com --with-status --infer-sensors -o graph.html
+```
+
+Or keep it out of the environment: `pbpaste | airflow-depgraph fetch --url https://airflow.example.com --token-stdin -o deps.json` on a Mac, `xclip -o | …` on Linux.
+
+The token expires after the time the Airflow admin set, a day by default, and the cookie is gone when you close the browser; log in again and copy a fresh one. When a token stops working the tool says so and points back here.
+
 ### Without credentials
 
 The tool needs nothing beyond what the Airflow UI already shows you. If you would rather not hand it a password, save the graph from a logged-in browser tab and work offline:

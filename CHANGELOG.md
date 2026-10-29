@@ -5,8 +5,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- README, *Get a token from the browser*: how to copy the `_token` cookie from DevTools, with a screenshot, and pass it with `AIRFLOW_DEPGRAPH_TOKEN` or `--token-stdin`.
+- The CLI points at that route: the "no username" and "no password" errors mention it, a rejected login or token prints a `hint:` line, and `init` says that a token skips the password at run time.
+
 ### Changed
-- Skill and README: a bearer token is the preferred credential and takes precedence over user and password; where to get one and how long it lives.
+- Skill and README: a bearer token is the preferred credential and takes precedence over user and password; the skill walks the user through copying it.
 
 ## [0.5.3] - 2026-10-29
 

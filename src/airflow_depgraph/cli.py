@@ -765,6 +765,20 @@ def _parser() -> argparse.ArgumentParser:
     return p
 
 
+def _auth_hint(exc: Exception, args: argparse.Namespace) -> str | None:
+    """One line after a rejected login or token, pointing at the token route."""
+    if not (isinstance(exc, ApiError) and exc.status in (401, 403) and exc.path in _AUTH_PATHS):
+        return None
+    used_token = bool(getattr(args, "token", None) or getattr(args, "token_stdin", False)
+                      or os.environ.get("AIRFLOW_DEPGRAPH_TOKEN"))
+    if used_token:
+        return ("the token was rejected or has expired; take a fresh _token cookie from the "
+                "browser (README, \"Get a token from the browser\")")
+    return ("check the user and password; or skip the login with a token: take the _token "
+            "cookie from the browser (README, \"Get a token from the browser\") and set "
+            "AIRFLOW_DEPGRAPH_TOKEN or use --token-stdin")
+
+
 def _exit_code(exc: Exception) -> int:
     if isinstance(exc, CredentialsError):
         return EXIT_CREDENTIALS
@@ -786,6 +800,9 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
     except (SnapshotError, PresetError, CredentialsError, ApiError, CliError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
+        hint = _auth_hint(exc, args)
+        if hint:
+            print(f"hint: {hint}", file=sys.stderr)
         return _exit_code(exc)
     except KeyboardInterrupt:
         print("interrupted", file=sys.stderr)

@@ -1,3 +1,4 @@
+import io
 import json
 from pathlib import Path
 
@@ -760,6 +761,36 @@ def test_exit_3_rejected_login(monkeypatch, tmp_path, live, capsys):
     monkeypatch.setattr(cli.AirflowClient, "login", _raiser(
         ApiError("authentication failed (401): check username/password", 401, "/auth/token")))
     assert cli.main(["fetch", "--url", URL, "-o", str(tmp_path / "s.json")]) == 3
+
+
+def test_rejected_login_hints_at_the_token_route(monkeypatch, tmp_path, live, capsys):
+    monkeypatch.setattr(cli.AirflowClient, "login", _raiser(
+        ApiError("authentication failed (401): check username/password", 401, "/auth/token")))
+    cli.main(["fetch", "--url", URL, "-o", str(tmp_path / "s.json")])
+    err = capsys.readouterr().err
+    assert "hint: check the user and password" in err
+    assert "_token cookie" in err and "AIRFLOW_DEPGRAPH_TOKEN" in err
+
+
+def test_rejected_token_hints_at_a_fresh_cookie(monkeypatch, tmp_path, live, capsys):
+    class Expired(FakeClient):
+        def dependencies(self, node_id=None):
+            raise ApiError("401 on /ui/dependencies", 401, "/ui/dependencies")
+    monkeypatch.setattr(cli, "AirflowClient", Expired)
+    monkeypatch.setenv("AIRFLOW_DEPGRAPH_TOKEN", "old")
+    assert cli.main(["fetch", "--url", URL, "-o", str(tmp_path / "s.json")]) == 3
+    err = capsys.readouterr().err
+    assert "hint: the token was rejected or has expired" in err
+    assert "fresh _token cookie" in err
+
+
+def test_missing_password_mentions_the_token(monkeypatch, tmp_path, live, capsys):
+    monkeypatch.setenv("AIRFLOW_DEPGRAPH_USER", "alice")
+    monkeypatch.delenv("AIRFLOW_DEPGRAPH_PASSWORD", raising=False)
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    assert cli.main(["fetch", "--url", URL, "-o", str(tmp_path / "s.json")]) == 3
+    err = capsys.readouterr().err
+    assert "no password" in err and "a token needs neither" in err
 
 
 def test_exit_3_forbidden_dependencies(monkeypatch, tmp_path, live):

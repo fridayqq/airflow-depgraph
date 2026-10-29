@@ -20,14 +20,17 @@ escaping.
    Needs Python ≥ 3.11. Airflow 2 is not supported.
 2. **Connection.** Credentials in this order of preference; a token always wins over a
    user and password when both are present.
-   - **Token.** If `AIRFLOW_DEPGRAPH_TOKEN` is set, or the user can give a token, use it:
-      every command takes `--url U` with the token from the environment or `--token-stdin`
-      (`pass show airflow/token | airflow-depgraph fetch --url U --token-stdin …`). No login
-      call is made; status, catalog and sensor inference all work. The token is the JWT the
-      browser keeps in the `_token` cookie after login (DevTools, Application/Storage, Cookies),
-      or the `access_token` from `POST U/auth/token` with `{"username", "password"}`. It
-      expires after the time the admin set (a day by default); a 401 (exit code 2) means get
-      a fresh one. Never write the token into a command, file, preset or chat reply.
+   - **Token.** Preferred. If `AIRFLOW_DEPGRAPH_TOKEN` is set, use it: every command takes
+      `--url U` and the token from the environment (or from `--token-stdin`, e.g.
+      `pbpaste | airflow-depgraph fetch --url U --token-stdin …`). No login call is made; status,
+      catalog and sensor inference all work. If it is not set and the user has no password
+      variable, walk them through getting one, in these words: log in to Airflow in the browser;
+      open DevTools (F12, ⌥⌘I on a Mac); *Application* tab (Firefox/Safari: *Storage*), expand
+      *Cookies*, click the Airflow origin; click the row `_token` and copy the value from the
+      *Cookie Value* box below the table; then `export AIRFLOW_DEPGRAPH_TOKEN='…'` in their
+      shell and re-run. README, "Get a token from the browser", has a screenshot. The token
+      lives a day by default; on a 401 (exit code 2) ask for a fresh one the same way. Never
+      write the token into a command, file, preset or chat reply.
    - **No credentials at all.** The user saves `U/ui/dependencies` from a logged-in browser
       tab as `deps.json`; `render`, `downstream`, `upstream` and `report` take that file as the
       snapshot (no status, tags or sensor links in it), so skip to step 4.
