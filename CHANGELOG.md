@@ -5,6 +5,9 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- README opens with a recorded demo of the page (`docs/images/demo.gif`, recorded by `docs/record_demo.mjs`); the static screenshot moved to *Page features*.
+
 ## [0.7.0] - 2026-10-29
 
 ### Added

@@ -4,7 +4,7 @@
 
 Fetch, query and render the Airflow 3 cross-DAG dependency graph (DAG → asset / trigger / sensor → DAG) from any Airflow 3 instance. It uses only the Python standard library. The result is a JSON snapshot you can query offline, plus one self-contained HTML page.
 
-![The rendered page: a force-directed graph of DAGs and assets with status rings on a gridded canvas, a header with counts, vertical chips and switches, and the side panel with the usage hints](docs/images/page.png)
+![Demo: the page loads and fits the graph, a search for "report" focuses the matching DAGs, the Finance and Marketing chips light their DAGs, a click on revenue_model lists its upstream and downstream, then blast radius and the failing chain](docs/images/demo.gif)
 
 ![How the pieces fit: Airflow → fetch → snapshot → render → HTML, with presets and credentials feeding fetch](docs/images/overview.png)
 
@@ -388,6 +388,8 @@ name = "example"
 
 The page is a single HTML file with d3 inlined, so it works offline.
 
+![The rendered page: a force-directed graph of DAGs and assets with status rings on a gridded canvas, a header with counts, vertical chips and switches, and the side panel with the usage hints](docs/images/page.png)
+
 - **Layout.** Node size grows with the number of transitive downstream DAGs. The shape shows the node type: DAG, asset, trigger or sensor.
 - **Status.** With `--with-status`, a red ring marks a pipeline failure and an amber ring marks a failure that is tests only. Paused failing DAGs get no ring. A DAG with no decisive run in the lookback has no status. Dark mode follows the system setting.
 - **Click.** Selecting a node highlights its upstream and downstream chain. The side panel lists both directions grouped by hop, each row with the link it came through, and a *Copy* button copies a list as plain text. Double-click pins or releases a node.
@@ -562,7 +564,7 @@ node --test tests/js/*.test.mjs   # graph-core.js only (list the files: older no
 
 `tests/contract/` runs against a live Airflow 3. `bash tests/contract/start_standalone.sh` starts `airflow standalone` with the DAGs in `tests/contract/dags`; then set `DEPGRAPH_CONTRACT_URL` plus `DEPGRAPH_CONTRACT_USER` and `DEPGRAPH_CONTRACT_PASSWORD` (or `DEPGRAPH_CONTRACT_TOKEN`) and run `uv run pytest tests/contract`. CI does the same nightly against the latest Airflow 3.
 
-The diagrams in this README are drawn with Excalidraw. Sources live in `docs/diagrams/*.excalidraw`; re-export the PNG/SVG files in `docs/images/` after editing them.
+The README demo `docs/images/demo.gif` is recorded by `docs/record_demo.mjs` from the fictional snapshot of `docs/demo_snapshot.py`; the comment at the top of the script has the steps. The diagrams in this README are drawn with Excalidraw. Sources live in `docs/diagrams/*.excalidraw`; re-export the PNG/SVG files in `docs/images/` after editing them.
 
 ## License
 
