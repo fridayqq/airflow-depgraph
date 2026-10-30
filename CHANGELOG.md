@@ -5,6 +5,9 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Library entry point: `build_page(settings, user=..., password=...)` returns the page for a live Airflow in one call; `fetch_snapshot`, `connect`, `render`, `load` and `Settings` are exported from the package. The CLI runs through the same code.
+
 ### Changed
 - README opens with a recorded demo of the page (`docs/images/demo.gif`, recorded by `docs/record_demo.mjs`); the static screenshot moved to *Page features*.
 - Airflow plugin section: no settings are needed; the variables that tune the page are listed, including `AIRFLOW_DEPGRAPH_TAG_FACET` and `AIRFLOW_DEPGRAPH_TAGS`.

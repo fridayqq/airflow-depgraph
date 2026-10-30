@@ -175,6 +175,19 @@ Other options worth knowing:
 - `presets --preset NAME` prints the resolved settings of a preset (never the token).
 - `--infer-sensors` (on `fetch` and `graph`) adds DAG dependencies found in Python and custom sensors. `--no-inferred` and `--include-guards` (on `downstream` and `upstream`) control how they are followed.
 
+## Use as a library
+
+The same steps are one function call from Python, for a scheduler or another tool that already holds the credentials:
+
+```python
+from airflow_depgraph import Settings, build_page
+
+settings = Settings(url="https://airflow.example.com", with_status=True, title="Dependency graph")
+html = build_page(settings, user="svc-user", password=secret)   # or token="..."
+```
+
+`build_page` logs in (a token wins over a user and password; without either argument the `AIRFLOW_DEPGRAPH_USER` and `AIRFLOW_DEPGRAPH_PASSWORD` variables and the preset's `password_cmd` are tried, as in the CLI), fetches the graph, the DAG catalog, the run status when `with_status` is set and the inferred sensor links when `infer_sensors` is set, and returns the HTML page as a string. `fetch_snapshot(client, settings)` stops before rendering and returns the `Snapshot`, `connect(settings, ...)` returns the logged-in client to reuse, and `render(snapshot, settings)` turns a snapshot (also one from `load(path)`) into the page. Pass `log=print` to see the progress and warnings the CLI prints to stderr; by default they are silent. Errors are the CLI's: `CredentialsError`, `ApiError` with the HTTP status, `SnapshotError`.
+
 ## Credentials
 
 The password is never accepted as a flag, so it stays out of shell history and process lists. It is read from the first of these that applies:

@@ -16,13 +16,13 @@ from pathlib import Path
 from airflow_depgraph import __version__, report, wizard
 from airflow_depgraph import snapshot as snapmod
 from airflow_depgraph.auth import CredentialsError, resolve_password, resolve_user
+from airflow_depgraph.build import fetch_snapshot
 from airflow_depgraph.cli_format import TITLES, format_hits, format_tree, hits_json, stamp
 from airflow_depgraph.client import AirflowClient, ApiError
 from airflow_depgraph.graph import Hit, walk
 from airflow_depgraph.labels import state_label
 from airflow_depgraph.presets import PresetError, Settings, list_presets, resolve
 from airflow_depgraph.render import render
-from airflow_depgraph.sensors import fetch_tasks, infer_sensor_edges
 from airflow_depgraph.snapshot import Snapshot, SnapshotError
 from airflow_depgraph.status import fetch_status
 
@@ -79,26 +79,6 @@ def _client(s: Settings, args: argparse.Namespace) -> AirflowClient:
     return AirflowClient.login(s.url, user, password, timeout=s.timeout)
 
 
-def _live_snapshot(client: AirflowClient, s: Settings, node_id: str | None) -> Snapshot:
-    raw = client.dependencies(node_id)
-    version = client.version()
-    try:
-        nodes, edges = snapmod.validate_payload(raw, version)
-    except SnapshotError as exc:
-        raise SnapshotError(f"{exc} (Airflow {version or 'version unknown'})") from None
-    snap = snapmod.new(nodes, edges, s.url, version)
-    if node_id:
-        note = " and no sensor inference" if s.infer_sensors else ""
-        print(f"note: --node-id fetches a subgraph: no DAG catalog{note}", file=sys.stderr)
-        return snap
-    try:
-        snap.catalog = snapmod.build_catalog(client.list_dags())
-    except ApiError as exc:
-        print(f"warning: cannot list DAGs ({exc}); no tag/paused/unlinked data for the page",
-              file=sys.stderr)
-    return snap
-
-
 def _walk(snap: Snapshot, dag: str, direction: str, depth: int,
           inferred: bool = True, guards: bool = False) -> list[Hit] | None:
     """None when the DAG is not a node of the graph (see _unlinked)."""
@@ -132,62 +112,12 @@ def _unlinked(snap: Snapshot, dag: str, direction: str, args: argparse.Namespace
                    f"({len(g.dag_ids)} DAGs known){suffix}")
 
 
-def _fetch_dags(client: AirflowClient, snap: Snapshot, s: Settings,
-                tasks_by_dag: dict[str, list[dict] | None] | None = None) -> dict | None:
-    ids = snap.graph.dag_ids
-    if s.with_status:
-        def progress(msg: str) -> None:
-            print(f"fetching status {msg.split()[0]}", file=sys.stderr)
-        result = fetch_status(client, ids, s, with_tasks=s.with_tasks, progress=progress,
-                              catalog=snap.catalog, workers=s.workers)
-        errors = [result[d]["error"] for d in ids if "error" in result.get(d, {})]
-        if errors:
-            print(f"warning: status unavailable for {len(errors)} of {len(ids)} DAGs "
-                  f"(first error: {errors[0]})", file=sys.stderr)
-        if s.with_tasks:
-            no_tasks = [d for d in ids if "error" not in result.get(d, {})
-                        and "tasks" not in result.get(d, {})]
-            if no_tasks:
-                print(f"warning: task list unavailable for {len(no_tasks)} DAGs", file=sys.stderr)
-        return result
-    if s.with_tasks:
-        tasks_by_dag = dict(tasks_by_dag or {})
-        missing = [d for d in ids if d not in tasks_by_dag]
-        if missing:
-            tasks_by_dag.update(fetch_tasks(client, missing, workers=s.workers))
-        unreadable = [d for d in ids if tasks_by_dag.get(d) is None]
-        if unreadable:
-            print(f"warning: task list unavailable for {len(unreadable)} DAGs", file=sys.stderr)
-        return {d: ({"tasks": [t["task_id"] for t in tasks_by_dag[d]]}
-                    if tasks_by_dag.get(d) is not None else {})
-                for d in ids}
-    return None
-
-
-def _infer(client: AirflowClient, snap: Snapshot,
-           s: Settings) -> tuple[list[dict], dict[str, list[dict] | None]]:
-    """Sensors of every catalog DAG (graph DAGs without a catalog) that wait on another DAG.
-    Also returns the task lists it read, so --with-tasks can reuse them."""
-    if snap.catalog is not None:
-        ids = sorted(d for d, c in snap.catalog.items() if not c.get("is_stale"))
-    else:
-        ids = snap.graph_for(inferred=False).dag_ids
-    print(f"inferring sensors: reading the tasks of {len(ids)} DAGs", file=sys.stderr)
-    tasks = fetch_tasks(client, ids, workers=s.workers)
-
-    def progress(msg: str) -> None:
-        print(f"inferring sensors {msg.split()[0]}", file=sys.stderr)
-    return infer_sensor_edges(client, ids, tasks, workers=s.workers, progress=progress), tasks
+def _stderr(message: str) -> None:
+    print(message, file=sys.stderr)
 
 
 def _fetch_snapshot(args: argparse.Namespace, s: Settings) -> Snapshot:
-    client = _client(s, args)
-    snap = _live_snapshot(client, s, args.node_id)
-    tasks = None
-    if s.infer_sensors and not args.node_id:
-        snap.inferred, tasks = _infer(client, snap, s)
-    snap.dags = _fetch_dags(client, snap, s, tasks)
-    return snap
+    return fetch_snapshot(_client(s, args), s, node_id=args.node_id, log=_stderr)
 
 
 # ---------- commands ----------
@@ -387,9 +317,8 @@ def _query(args: argparse.Namespace, direction: str) -> int:
         snap = snapmod.load(Path(args.snapshot))
     else:
         client = _client(s, args)
-        snap = _live_snapshot(client, s, None)
-        if s.infer_sensors:
-            snap.inferred, _ = _infer(client, snap, s)
+        snap = fetch_snapshot(client, dataclasses.replace(s, with_status=False, with_tasks=False),
+                              log=_stderr)
     dag = args.dag.removeprefix("dag:")
     hits = _walk(snap, dag, direction, args.depth,
                  inferred=not args.no_inferred, guards=args.include_guards)
