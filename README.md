@@ -55,9 +55,12 @@ Tested on Airflow 3.1.5 and 3.3.2, at the root and under a sub-path such as `/ai
 - **Headers.** Every response carries a `Content-Security-Policy`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: same-origin`.
 - **Inferred sensor links.** Off by default. With `AIRFLOW_DEPGRAPH_INFER_SENSORS=true` a
   background refresh adds them; see [Sensor dependencies (inferred)](#sensor-dependencies-inferred).
-- **Settings.** The same `AIRFLOW_DEPGRAPH_*` variables as the CLI (`..._HIGHLIGHT`,
-  `..._ASSET_LABEL_STRIP_PREFIX`, `..._TITLE`, `..._TESTS_TASK_REGEX`), or a preset named in
-  `AIRFLOW_DEPGRAPH_PRESET`, set on the api-server.
+- **Settings.** None are needed: the page finds the facet chips on its own and shows every
+  DAG the user may see. To tune it, set the same `AIRFLOW_DEPGRAPH_*` variables as the CLI on
+  the api-server: `..._TAG_FACET` (pin the chip family, e.g. `vertical:`), `..._TAGS`
+  (comma-separated, the *only tags* filter), `..._HIGHLIGHT` and `..._HIGHLIGHT_LABEL`,
+  `..._ASSET_LABEL_STRIP_PREFIX`, `..._TITLE`, `..._TESTS_TASK_REGEX`. A preset named in
+  `AIRFLOW_DEPGRAPH_PRESET` works too, if its file is inside the image.
 
 **Install on Astro.** Add one line to the project's `requirements.txt` and rebuild:
 
