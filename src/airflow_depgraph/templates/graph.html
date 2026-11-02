@@ -116,6 +116,7 @@ svg {
 }
 svg:active { cursor: grabbing; }
 text.lbl { font-family: var(--sans); font-size: 10px; font-weight: 500; fill: var(--fg); pointer-events: none; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round; }
+text.lbl.shelf { fill: var(--mut); font-weight: 600; }
 
 /* Trace sheet: the selected node and its chain, hop by hop. */
 aside { border-left: 1px solid var(--line); background: var(--panel); padding: 14px 18px 24px; overflow: auto; font-size: 12.5px; }
@@ -301,6 +302,13 @@ function buildView() {
   }
   const prev = nodeMap;
   nodes = [...keep].map(id => Object.assign({}, byId.get(id), prev.has(id) ? {x: prev.get(id).x, y: prev.get(id).y} : {}));
+  // With "linked DAGs only" off, the DAGs without any link sit on a shelf: rows under the graph,
+  // placed by placeShelf() on every tick, outside the forces.
+  if (!box('onlyLinked').checked) {
+    DATA.nodes.filter(n => n.type === 'dag' && loose(n) && passesDagFilters(n))
+      .sort((a, b) => a.label.localeCompare(b.label))
+      .forEach(n => nodes.push(Object.assign({}, n, {shelf: true})));
+  }
   nodeMap = new Map(nodes.map(n => [n.id, n]));
   links = es.map(e => ({source: e.s, target: e.t, via: e.via, inf: e.inf, guard: e.guard, soft: e.strength === 'soft'}));
   pendingFit = true;  // a filter toggle refits once the layout settles (search does not come here)
@@ -326,7 +334,7 @@ function draw() {
     .attr('stroke-width', 1.2).attr('marker-end', 'url(#arrow)')
     .attr('stroke-dasharray', l => l.inf || l.guard ? '4 3' : l.soft ? '7 5' : null);
   const node = root.append('g').selectAll('g').data(nodes, d => d.id).join('g').attr('class', 'n').style('cursor', 'pointer')
-    .call(d3.drag().filter((ev, d) => !ev.ctrlKey && !ev.button)
+    .call(d3.drag().filter((ev, d) => !ev.ctrlKey && !ev.button && !d.shelf)
       .on('start', (ev, d) => { if (!ev.active) sim.alphaTarget(.3).restart(); d.fx = d.x; d.fy = d.y; })
       .on('drag', (ev, d) => { d.fx = ev.x; d.fy = ev.y; })
       .on('end', (ev, d) => { if (!ev.active) sim.alphaTarget(0); if (!d.pinned) { d.fx = null; d.fy = null; } }));
@@ -355,7 +363,10 @@ function draw() {
     const k = (r(l.target) + (failing(l.target) ? 6 : 2)) / len;
     return {x: l.target.x - dx * k, y: l.target.y - dy * k};
   };
+  const shelfTitle = root.append('g').attr('class', 'labels').append('text').attr('class', 'lbl shelf')
+    .attr('display', 'none');
   const ticked = () => {
+    placeShelf(shelfTitle);
     link.attr('x1', l => l.source.x).attr('y1', l => l.source.y)
       .attr('x2', l => rim(l).x).attr('y2', l => rim(l).y);
     node.attr('transform', d => `translate(${d.x},${d.y})`);
@@ -382,6 +393,27 @@ function draw() {
   applyHighlight();
 }
 
+// The shelf: DAGs without any link, in rows under the lowest linked node, as wide as the graph
+// (at least 12 columns), centred on it. Fixed positions, so the forces leave them alone.
+const SHELF_STEP = 16, SHELF_GAP = 40;
+function placeShelf(title) {
+  const shelf = nodes.filter(n => n.shelf);
+  if (!shelf.length) { title.attr('display', 'none'); return; }
+  const rest = nodes.filter(n => !n.shelf && n.x != null);
+  const cx = rest.length ? (d3.min(rest, n => n.x) + d3.max(rest, n => n.x)) / 2 : W() / 2;
+  const width = rest.length ? d3.max(rest, n => n.x) - d3.min(rest, n => n.x) : 0;
+  const cols = Math.max(12, Math.floor(width / SHELF_STEP));
+  const top = (rest.length ? d3.max(rest, n => n.y + r(n)) : H() / 2) + SHELF_GAP;
+  const x0 = cx - (Math.min(cols, shelf.length) - 1) * SHELF_STEP / 2;
+  shelf.forEach((n, i) => {
+    n.fx = n.x = x0 + (i % cols) * SHELF_STEP;
+    n.fy = n.y = top + Math.floor(i / cols) * SHELF_STEP;
+  });
+  const k = scale();
+  title.attr('display', null).attr('text-anchor', 'start').style('font-size', `${11 / k}px`).style('stroke-width', `${3 / k}px`).text(`${plural(shelf.length, 'DAG', 'DAGs')} without dependencies`)
+    .attr('transform', `translate(${x0 - r(shelf[0])},${top - r(shelf[0]) - 8 / k})`);
+}
+
 // A label sits under its node, 10 screen pixels below the rim.
 function placeLabels(sel) { const k = scale(); sel.attr('transform', d => `translate(${d.x},${d.y + r(d) + 10 / k})`); }
 
@@ -390,7 +422,7 @@ const ZOOM_LABELS = 1.8;
 const BIG_GRAPH = 800;   // nodes; above this the layout is pre-computed and settles faster
 function updateLabels() {
   const k = scale();  // label text and halo stay 10 and 3 screen pixels whatever the zoom
-  const labels = root.selectAll('g.labels text.lbl').style('font-size', `${10 / k}px`).style('stroke-width', `${3 / k}px`)
+  const labels = root.selectAll('g.labels text.lbl:not(.shelf)').style('font-size', `${10 / k}px`).style('stroke-width', `${3 / k}px`)
     .style('opacity', d => (FACET && facetSel.size && !facetBright.has(d.id)) ? .3 : 1);
   labels.attr('display', d => {
     const inFocus = d.id === selectedId || (focusKeep && focusKeep.has(d.id));
