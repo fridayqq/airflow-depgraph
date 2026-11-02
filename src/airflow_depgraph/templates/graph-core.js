@@ -11,13 +11,15 @@ function tagged(n, tags) { return (n.tags || []).some(t => tags.includes(t)); }
 // Unlinked DAGs, and DAGs linked only by deploy guards while guards are hidden.
 function looseNode(n, guardsOn) { return !!(n.unlinked || (n.guard_only && !guardsOn)); }
 
-// Adjacency maps {out, inn} from edges. Guard edges are left out unless opts.guards.
+// Adjacency maps {out, inn} from edges. Guard edges are left out unless opts.guards; soft asset
+// edges (the DAG runs without the asset) are left out when opts.onlyHard.
 function buildAdj(edges, nodesById, opts) {
-  const guards = !!(opts && opts.guards);
+  const guards = !!(opts && opts.guards), onlyHard = !!(opts && opts.onlyHard);
   const out = new Map(), inn = new Map();
   for (const e of edges) {
     if (!nodesById.has(e.s) || !nodesById.has(e.t)) continue;
     if (e.guard && !guards) continue;
+    if (onlyHard && e.strength === 'soft') continue;
     if (!out.has(e.s)) out.set(e.s, []);
     if (!inn.has(e.t)) inn.set(e.t, []);
     out.get(e.s).push(e.t);
@@ -62,12 +64,13 @@ function neighbours(id, adj, nodesById) {
   return out;
 }
 
-// The filters: tag, active, connected, guards, blast radius and only failing. data = {nodes, edges,
-// byId, tags}; state = {onlyTags, onlyActive, conn, showGuards, blast, onlyFail}. Returns the kept
-// node ids and the edges between them.
+// The filters: tag, active, connected, guards, hard edges only, blast radius and only failing.
+// data = {nodes, edges, byId, tags}; state = {onlyTags, onlyActive, conn, showGuards, onlyHard,
+// blast, onlyFail}. Returns the kept node ids and the edges between them.
 function filterView(data, state) {
   const byId = data.byId, tags = data.tags || [];
-  const adj = buildAdj(data.edges, byId, {guards: state.showGuards});
+  const onlyHard = !!state.onlyHard;
+  const adj = buildAdj(data.edges, byId, {guards: state.showGuards, onlyHard});
   const tagOn = tags.length > 0 && !!state.onlyTags, active = !!state.onlyActive, guards = !!state.showGuards;
   const okDag = n => !(active && n.paused);
   const dags = new Set(data.nodes.filter(n => n.type === 'dag' && !looseNode(n, guards) && (!tagOn || tagged(n, tags)) && okDag(n))
@@ -85,6 +88,17 @@ function filterView(data, state) {
       if (kept === 0 || (kept < 2 && kept < around.length)) { keep.delete(id); changed = true; }
     }
   }
+  if (onlyHard) {  // an asset no kept DAG hard-depends on goes, then every node left without an edge
+    for (const id of [...keep]) {
+      const n = byId.get(id);
+      if (n.type === 'asset' && !(adj.out.get(id) || []).some(x => keep.has(x))) keep.delete(id);
+    }
+    const linked = new Set();
+    for (const e of data.edges) {
+      if (keep.has(e.s) && keep.has(e.t) && e.strength !== 'soft' && !(e.guard && !guards)) { linked.add(e.s); linked.add(e.t); }
+    }
+    keep = new Set([...keep].filter(id => linked.has(id)));
+  }
   if (state.blast) {  // failing DAGs and everything downstream of them, no upstream
     const lit = new Set();
     data.nodes.filter(n => keep.has(n.id) && failing(n)).forEach(n => reach([n.id], adj.out, Infinity, byId).forEach(x => lit.add(x)));
@@ -95,28 +109,30 @@ function filterView(data, state) {
     data.nodes.filter(n => keep.has(n.id) && failing(n)).forEach(n => chain(n.id, adj.out, adj.inn, byId).forEach(x => lit.add(x)));
     keep = new Set([...keep].filter(id => lit.has(id)));
   }
-  return {keep, edges: data.edges.filter(e => keep.has(e.s) && keep.has(e.t))};
+  return {keep, edges: data.edges.filter(e => keep.has(e.s) && keep.has(e.t) && !(onlyHard && e.strength === 'soft'))};
 }
 
 // Collapse dag -> link(s) -> dag into dag -> dag; via = the last link on the way. Returns the DAG ids
 // among nodes and the collapsed edges.
 function collapseLinks(nodes, edges, byId) {
   const adj = new Map(), coll = new Map();
-  edges.forEach(e => { if (!adj.has(e.s)) adj.set(e.s, []); adj.get(e.s).push(e.t); });
-  const add = (s, t, via, x) => {
+  edges.forEach(e => { if (!adj.has(e.s)) adj.set(e.s, []); adj.get(e.s).push({t: e.t, soft: e.strength === 'soft'}); });
+  // A collapsed edge is soft when its last hop (link -> DAG) is; a hard path to the same DAG wins.
+  const add = (s, t, via, x, soft) => {
     const k = s + '|' + t, f = {inf: !!byId.get(x || s).inferred, guard: x ? byId.get(x).kind === 'guard' : false};
     if (s === t) return;
-    if (!coll.has(k)) coll.set(k, {s, t, via, ...f});
-    else if (!f.inf && !f.guard) Object.assign(coll.get(k), {via, inf: false, guard: false});  // an explicit path wins
+    const cur = coll.get(k);
+    if (!cur) coll.set(k, {s, t, via, ...f, ...(x ? {strength: soft ? 'soft' : 'hard'} : {})});
+    else if (!f.inf && !f.guard) Object.assign(cur, {via, inf: false, guard: false, ...(x && !soft ? {strength: 'hard'} : {})});  // an explicit path wins
   };
   edges.forEach(e => {
     if (byId.get(e.s).type !== 'dag') return;
-    if (byId.get(e.t).type === 'dag') { add(e.s, e.t, null, null); return; }
+    if (byId.get(e.t).type === 'dag') { add(e.s, e.t, null, null, false); return; }
     const seen = new Set([e.t]), stack = [e.t];
     while (stack.length) {
       const x = stack.pop();
-      for (const y of adj.get(x) || []) {
-        if (byId.get(y).type === 'dag') add(e.s, y, byId.get(x).label, x);
+      for (const {t: y, soft} of adj.get(x) || []) {
+        if (byId.get(y).type === 'dag') add(e.s, y, byId.get(x).label, x, soft);
         else if (!seen.has(y)) { seen.add(y); stack.push(y); }
       }
     }

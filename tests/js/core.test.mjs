@@ -85,6 +85,26 @@ test('filterView: returns the edges between kept nodes only', () => {
 });
 
 // d1 -> a1 -> a2 -> d3 (two link nodes), and a direct d1 -> d4.
+test('filterView: hard edges only drops soft edges and the DAGs they alone linked', () => {
+  const soft = {...view, edges: view.edges.map(e => e.s === 'asset:a2' ? {...e, strength: 'soft'} : {...e, strength: 'hard'})};
+  const out = core.filterView(soft, {...off, onlyHard: true});
+  assert.deepEqual([...out.keep].sort(), ['asset:a1', 'dag:d1', 'dag:d3']);
+  assert.equal(out.edges.length, 2);
+  assert.deepEqual([...core.filterView(soft, off).keep].sort(), ['asset:a1', 'asset:a2', 'dag:d1', 'dag:d2', 'dag:d3']);
+});
+
+test('collapseLinks: a collapsed edge is soft when its last hop is, a hard path wins', () => {
+  const b = view.byId;
+  const edges = [
+    {s: 'dag:d1', t: 'asset:a1'}, {s: 'asset:a1', t: 'dag:d3', strength: 'soft'},
+    {s: 'dag:d1', t: 'asset:a2'}, {s: 'asset:a2', t: 'dag:d3', strength: 'hard'},
+    {s: 'dag:d2', t: 'asset:a2'},
+  ];
+  const out = core.collapseLinks(['dag:d1', 'dag:d2', 'dag:d3', 'asset:a1', 'asset:a2'], edges, b);
+  const by = Object.fromEntries(out.edges.map(e => [e.s + '>' + e.t, e.strength]));
+  assert.deepEqual(by, {'dag:d1>dag:d3': 'hard', 'dag:d2>dag:d3': 'hard'});
+});
+
 test('collapseLinks: two link nodes collapse to one DAG edge, direct DAG edges stay', () => {
   const b = new Map([
     ['dag:d1', {id: 'dag:d1', type: 'dag'}], ['dag:d3', {id: 'dag:d3', type: 'dag'}],

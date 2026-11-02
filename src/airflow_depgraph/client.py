@@ -315,6 +315,10 @@ class AirflowClient:
     def dag(self, dag_id: str) -> dict:
         return self.get(f"/api/v2/dags/{self._q(dag_id)}")
 
+    def dag_details(self, dag_id: str) -> dict:
+        """The full DAG record, `asset_expression` (the asset schedule) included."""
+        return self.get(f"/api/v2/dags/{self._q(dag_id)}/details")
+
     def dag_runs(self, dag_id: str, limit: int) -> list[dict]:
         data = self.get(f"/api/v2/dags/{self._q(dag_id)}/dagRuns",
                         limit=limit, order_by="-run_after")

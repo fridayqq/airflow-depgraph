@@ -66,6 +66,10 @@ class FakeClient:
     def dag(self, dag_id):
         return {"is_paused": dag_id == "y", "timetable_summary": "Asset", "owners": ["o"]}
 
+    def dag_details(self, dag_id):
+        return {"timetable_summary": "Asset or 0 8 * * *" if dag_id == "y" else "Asset",
+                "asset_expression": {"all": [{"asset": {"uri": "orders", "name": "orders"}}]}}
+
     def tasks(self, dag_id):
         return [{"task_id": "refresh_dashboard"}, {"task_id": "other"}]
 

@@ -37,6 +37,7 @@ class Settings:
     status_runs_lookback: int = 5
     tags: tuple[str, ...] = ()
     infer_sensors: bool = False
+    edge_strength: bool = True      # hard/soft asset edges from each consumer DAG's schedule
     infer_interval_minutes: int = 30
     timeout: float = 25             # seconds per API request
     workers: int = 8                # parallel API requests (status, task lists, sensors)

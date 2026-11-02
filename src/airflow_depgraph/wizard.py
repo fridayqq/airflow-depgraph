@@ -72,6 +72,11 @@ _DOC: list[tuple[str, list[str]]] = [
                        "list per DAG."]),
     ("infer_interval_minutes", ["Plugin only: minutes between background refreshes of the "
                                 "inferred sensor links."]),
+    ("edge_strength", ["Mark asset edges hard or soft from each consumer DAG's asset schedule "
+                       "(one GET",
+                       "/dags/{id}/details per consumer DAG, in parallel). Soft: \"Asset or "
+                       "<cron>\", an \"any\" condition,",
+                       "or an asset only read as a task inlet."]),
     ("timeout", ["Seconds to wait for one API request before it fails. Timeouts, 429 and "
                  "502-504 are retried twice."]),
     ("workers", ["Parallel API requests for run status, task lists and sensor inference."]),

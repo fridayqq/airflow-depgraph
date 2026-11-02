@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Hard/soft asset edges: `fetch`, `graph`, the plugin and the library read each consumer DAG's asset schedule (`GET /api/v2/dags/{id}/details`, parallel) and mark every asset -> DAG edge `strength: hard|soft` in the snapshot. Soft means the DAG runs without the asset: `Asset or <cron>`, an `any` condition, or an inlet-only read. The page draws soft edges dashed, counts them in the header, adds a *hard edges only* toggle (hash flag `hard`) and a legend entry. Preset key `edge_strength` (default true) switches the extra calls off.
 - Library entry point: `build_page(settings, user=..., password=...)` returns the page for a live Airflow in one call; `fetch_snapshot`, `connect`, `render`, `load` and `Settings` are exported from the package. The CLI runs through the same code.
 
 ### Changed

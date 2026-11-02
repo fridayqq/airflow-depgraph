@@ -6,8 +6,9 @@
                       user="svc-user", password=secret)
 
 `build_page` logs in (a token wins over a user and password, as in the CLI), fetches the graph,
-the DAG catalog, the run status when `with_status` is set and the inferred sensor links when
-`infer_sensors` is set, then renders the self-contained HTML page. Progress and warnings go to
+the DAG catalog, the hard/soft strength of the asset edges (`edge_strength`, on by default), the
+run status when `with_status` is set and the inferred sensor links when `infer_sensors` is set,
+then renders the self-contained HTML page. Progress and warnings go to
 the `log` callback, which is silent by default; the CLI passes one that prints to stderr.
 """
 
@@ -24,6 +25,7 @@ from .render import render
 from .sensors import fetch_tasks, infer_sensor_edges
 from .snapshot import Snapshot, SnapshotError
 from .status import fetch_status
+from .strength import annotate, consumers, fetch_details
 
 Log = Callable[[str], None]
 
@@ -116,12 +118,28 @@ def _infer(client: AirflowClient, snap: Snapshot, s: Settings,
     return infer_sensor_edges(client, ids, tasks, workers=s.workers, progress=progress), tasks
 
 
+def _strength(client: AirflowClient, snap: Snapshot, s: Settings, log: Log) -> None:
+    """Mark every asset -> DAG edge hard or soft from the consumer DAG's asset schedule."""
+    ids = consumers(snap.nodes, snap.edges)
+    if not ids:
+        return
+    log(f"reading the asset schedules of {len(ids)} DAGs")
+    details = fetch_details(client, ids, workers=s.workers,
+                            progress=lambda m: log(f"asset schedules {m}"))
+    missing = len(ids) - len(details)
+    if missing:
+        log(f"warning: asset schedule unavailable for {missing} of {len(ids)} DAGs")
+    snap.edges = annotate(snap.nodes, snap.edges, details)
+
+
 def fetch_snapshot(client: AirflowClient, s: Settings, *, node_id: str | None = None,
                    log: Log = _quiet) -> Snapshot:
     """The graph plus, unless `node_id` narrows it to a subgraph, the DAG catalog, the inferred
     sensor links (`infer_sensors`) and the run status or task lists (`with_status`,
     `with_tasks`)."""
     snap = _live_snapshot(client, s, node_id, log)
+    if s.edge_strength and not node_id:
+        _strength(client, snap, s, log)
     tasks = None
     if s.infer_sensors and not node_id:
         snap.inferred, tasks = _infer(client, snap, s, log)

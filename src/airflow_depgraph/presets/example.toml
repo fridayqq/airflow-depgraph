@@ -56,6 +56,10 @@ name = "example"
 # infer_sensors = false
 # Plugin only: minutes between background refreshes of the inferred sensor links.
 # infer_interval_minutes = 30
+# Mark asset edges hard or soft from each consumer DAG's asset schedule (one GET
+# /dags/{id}/details per consumer DAG, in parallel). Soft: "Asset or <cron>", an "any" condition,
+# or an asset only read as a task inlet.
+# edge_strength = true
 
 # Seconds to wait for one API request before it fails. Timeouts, 429 and 502-504 are retried twice.
 # timeout = 25

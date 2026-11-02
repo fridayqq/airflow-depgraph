@@ -100,7 +100,9 @@ def build_view(snap: Snapshot, s: Settings, status_override: dict | None = None)
         dag_fields(node, dag_id)
         nodes.append(node)
 
-    edges = [{"s": e["source_id"], "t": e["target_id"]} for e in raw_edges]
+    edges = [{"s": e["source_id"], "t": e["target_id"], **({"strength": e["strength"]}
+                                                           if e.get("strength") else {})}
+             for e in raw_edges]
     count = lambda t: sum(1 for n in nodes if n["type"] == t)  # noqa: E731
     dag_nodes = [n for n in nodes if n["type"] == "dag"]
     stats = {
@@ -109,6 +111,8 @@ def build_view(snap: Snapshot, s: Settings, status_override: dict | None = None)
         "triggers": count("trigger"),
         "sensors": count("sensor"),
         "edges": len(edges),
+        "hard": sum(1 for e in edges if e.get("strength") == "hard"),
+        "soft": sum(1 for e in edges if e.get("strength") == "soft"),
         "failing": sum(1 for n in nodes if n.get("fail") and not n["fail"].get("paused")),
         "unlinked": sum(1 for n in dag_nodes if n.get("unlinked")),
         "paused": sum(1 for n in dag_nodes if n["paused"]),
@@ -147,7 +151,8 @@ def _stats_line(st: dict, inferred_note: str | None = None, inferred_updated: st
             _plural(st["dags"], "DAG", "DAGs"),
             _plural(st["assets"], "asset", "assets"),
             _plural(st["triggers"], "trigger", "triggers"),
-            _plural(st["edges"], "edge", "edges"),
+            _plural(st["edges"], "edge", "edges")
+            + (f" ({st['hard']} hard, {st['soft']} soft)" if st.get("hard") or st.get("soft") else ""),
             f"failing at snapshot: {st['failing']}",
             f"sensors: {st['sensors']} (Airflow)",
         ] + ([inferred_note] if inferred_note else []) + [_snapshot_text(st["snapshot"])] + status_note
