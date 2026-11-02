@@ -393,16 +393,15 @@ function draw() {
   applyHighlight();
 }
 
-// The shelf: DAGs without any link, in rows under the lowest linked node, as wide as the graph
-// (at least 12 columns), centred on it. Fixed positions, so the forces leave them alone.
+// The shelf: DAGs without any link, in a square grid under the lowest linked node, centred on
+// the graph. Fixed positions, so the forces leave them alone.
 const SHELF_STEP = 16, SHELF_GAP = 40;
 function placeShelf(title) {
   const shelf = nodes.filter(n => n.shelf);
   if (!shelf.length) { title.attr('display', 'none'); return; }
   const rest = nodes.filter(n => !n.shelf && n.x != null);
   const cx = rest.length ? (d3.min(rest, n => n.x) + d3.max(rest, n => n.x)) / 2 : W() / 2;
-  const width = rest.length ? d3.max(rest, n => n.x) - d3.min(rest, n => n.x) : 0;
-  const cols = Math.max(12, Math.floor(width / SHELF_STEP));
+  const cols = Math.ceil(Math.sqrt(shelf.length));
   const top = (rest.length ? d3.max(rest, n => n.y + r(n)) : H() / 2) + SHELF_GAP;
   const x0 = cx - (Math.min(cols, shelf.length) - 1) * SHELF_STEP / 2;
   shelf.forEach((n, i) => {
