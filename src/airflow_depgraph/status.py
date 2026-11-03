@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 
-from .client import AirflowClient, ApiError
+from .client import NONEMPTY_TI_STATES, AirflowClient, ApiError
 from .presets import Settings
 
 _EMPTY_STATES = {"skipped", "removed", None}
@@ -41,9 +41,26 @@ def _failed_run(run_id: str, run_after: str | None, instances: list[dict],
                    run_after, run_id, failed, len(upstream), upstream)
 
 
+def _success(run: dict) -> LastRun:
+    return LastRun("success", None, run.get("run_after"), run["dag_run_id"], [], 0)
+
+
+def _redone(failed_tasks: list[str], ran: set[str]) -> bool:
+    """Whether every task that failed ran again (`ran`: the task ids in a non-empty state in the
+    successes since). A run that took a freshness gate's skip path ends green with the failed
+    work still undone, so such a success does not fix the failure. A task gone from the DAG
+    never shows up again; its failure stands until the failed run leaves the lookback."""
+    return all(t in ran for t in failed_tasks)
+
+
 def classify_runs(runs: list[dict], task_instances: Callable[[str], list[dict]],
                   tests_task_regex: str) -> LastRun | None:
-    """Return the newest decisive run (runs are newest first), or None."""
+    """Return the newest decisive run (runs are newest first), or None.
+
+    A success in which some task ran is decisive, unless an older run of the window failed and
+    none of the successes since redid the tasks that failed there: then the DAG is still failing
+    and the failed run is the answer."""
+    fixes: list[tuple[dict, list[dict]]] = []   # non-empty successes newer than the first failure
     for run in runs:
         state = run.get("state")
         run_id = run["dag_run_id"]
@@ -51,11 +68,16 @@ def classify_runs(runs: list[dict], task_instances: Callable[[str], list[dict]],
             instances = task_instances(run_id)
             if all(ti.get("state") in _EMPTY_STATES for ti in instances):
                 continue  # empty success: nothing really ran
-            return LastRun("success", None, run.get("run_after"), run_id, [], 0)
-        if state == "failed":
-            return _failed_run(run_id, run.get("run_after"), task_instances(run_id),
+            fixes.append((run, instances))
+        elif state == "failed":
+            last = _failed_run(run_id, run.get("run_after"), task_instances(run_id),
                                tests_task_regex)
-    return None
+            if not fixes:
+                return last
+            ran = {ti["task_id"] for _, inst in fixes for ti in inst
+                   if ti.get("state") not in _EMPTY_STATES}
+            return _success(fixes[0][0]) if _redone(last.failed_tasks, ran) else last
+    return _success(fixes[0][0]) if fixes else None
 
 
 def _facts(client: AirflowClient, dag_id: str, catalog: dict[str, dict] | None) -> dict:
@@ -159,6 +181,7 @@ def _decide_bulk(client: AirflowClient, runs: dict[str, list[dict]], tests_task_
                                              by_run.get((d, run["dag_run_id"]), []),
                                              tests_task_regex)
                     pending.discard(d)
+            recovering: dict[str, tuple[dict, dict, list[dict]]] = {}
             if succeeded:
                 # Decisive when some task is not skipped, removed or none: the same rule as
                 # classify_runs, asked with the non-empty task states.
@@ -166,13 +189,37 @@ def _decide_bulk(client: AirflowClient, runs: dict[str, list[dict]], tests_task_
                           for d, run in succeeded.items()}
                 for fut in as_completed(checks):
                     d = checks[fut]
-                    run = succeeded[d]
-                    if fut.result():
-                        decided[d] = LastRun("success", None, run.get("run_after"),
-                                             run["dag_run_id"], [], 0)
-                        pending.discard(d)
-                    else:
+                    run, rs, i = succeeded[d], runs[d], cursor[d]
+                    if not fut.result():
                         cursor[d] += 1
+                        continue
+                    j = next((k for k in range(i + 1, len(rs)) if rs[k].get("state") == "failed"),
+                             None)
+                    if j is None:
+                        decided[d] = _success(run)
+                        pending.discard(d)
+                    else:   # a failure in the window: fixed only if its tasks ran since
+                        recovering[d] = (run, rs[j], [r for r in rs[i:j]
+                                                      if r.get("state") == "success"])
+            if recovering:
+                dags = list(recovering)
+                failed_tis: dict[tuple, list[dict]] = {}
+                for ti in client.bulk_task_instances(
+                        dags, [f["dag_run_id"] for _, f, _ in recovering.values()],
+                        _FAILED_STATES):
+                    failed_tis.setdefault((ti.get("dag_id"), ti.get("dag_run_id")), []).append(ti)
+                ran: dict[tuple, set[str]] = {}
+                for ti in client.bulk_task_instances(
+                        dags, [r["dag_run_id"] for _, _, since in recovering.values()
+                               for r in since], NONEMPTY_TI_STATES):
+                    ran.setdefault((ti.get("dag_id"), ti.get("dag_run_id")), set()).add(ti["task_id"])
+                for d, (run, failed_run, since) in recovering.items():
+                    last = _failed_run(failed_run["dag_run_id"], failed_run.get("run_after"),
+                                       failed_tis.get((d, failed_run["dag_run_id"]), []),
+                                       tests_task_regex)
+                    ran_since = set().union(*(ran.get((d, r["dag_run_id"]), set()) for r in since))
+                    decided[d] = _success(run) if _redone(last.failed_tasks, ran_since) else last
+                    pending.discard(d)
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
     return decided

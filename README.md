@@ -515,7 +515,7 @@ Status needs `--with-status` (or `with_status = true`). For each DAG:
 
 - Runs are examined newest first, up to `status_runs_lookback`.
 - Runs that are still running or queued are skipped. So are successful runs in which every task was skipped.
-- The first remaining run is the decisive one. If it succeeded, the DAG is healthy. If it failed, the DAG is failing.
+- The first remaining run is the decisive one. If it failed, the DAG is failing. If it succeeded, the DAG is healthy, unless an older run in the lookback failed and none of the successful runs since ran the tasks that failed there: a run that took a freshness gate's skip path ends green with the failed work still undone, so the DAG stays failing (the failed run is reported) until a run redoes that work or the failed run leaves the lookback.
 - A failing DAG is of kind `tests` when every task in state `failed` matches `tests_task_regex`. Otherwise it is a pipeline failure. The regex is configurable because a pipeline task named like `load_test_data` would otherwise count as a test.
 - Tasks in state `upstream_failed` do not count, because they only inherit a failure.
 

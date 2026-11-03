@@ -74,6 +74,52 @@ def test_success_decisive():
     assert (res.state, res.kind, res.failed_tasks) == ("success", None, [])
 
 
+def test_gate_skip_success_does_not_fix_the_failure():
+    # The gate and its skip sink end green, the work is skipped: the failed task never ran again.
+    runs = [{"dag_run_id": "r2", "state": "success", "run_after": "2026-01-02T00:00:00Z"},
+            {"dag_run_id": "r1", "state": "failed", "run_after": "2026-01-01T00:00:00Z"}]
+    ti = _ti({"r2": {"check_asset_freshness": "success", "dbt_run": "skipped",
+                     "dbt_test": "skipped", "skip_execution": "success"},
+              "r1": {"check_asset_freshness": "success", "dbt_run": "success",
+                     "dbt_test": "failed", "skip_execution": "skipped"}})
+    res = classify_runs(runs, ti, RX)
+    assert ti.calls == ["r2", "r1"]
+    assert (res.state, res.kind, res.run_id, res.run_after) == ("failed", "tests", "r1",
+                                                                "2026-01-01T00:00:00Z")
+
+
+def test_success_that_reran_the_failed_task_fixes_it():
+    runs = [{"dag_run_id": "r2", "state": "success"}, {"dag_run_id": "r1", "state": "failed"}]
+    ti = _ti({"r2": {"dbt_run": "success", "dbt_test": "success"},
+              "r1": {"dbt_run": "success", "dbt_test": "failed"}})
+    res = classify_runs(runs, ti, RX)
+    assert (res.state, res.run_id) == ("success", "r2")
+
+
+def test_any_success_since_the_failure_may_be_the_fix():
+    # The newest run skipped the work, the one before it redid the failed task: fixed, and the
+    # newest non-empty success is the decisive run.
+    runs = [{"dag_run_id": "r3", "state": "success"}, {"dag_run_id": "r2", "state": "success"},
+            {"dag_run_id": "r1", "state": "failed"}]
+    ti = _ti({"r3": {"gate": "success", "dbt_test": "skipped"},
+              "r2": {"gate": "success", "dbt_test": "success"},
+              "r1": {"gate": "success", "dbt_test": "failed"}})
+    res = classify_runs(runs, ti, RX)
+    assert (res.state, res.run_id) == ("success", "r3")
+
+
+def test_a_failed_task_gone_from_the_dag_keeps_the_failure():
+    runs = [{"dag_run_id": "r2", "state": "success"}, {"dag_run_id": "r1", "state": "failed"}]
+    ti = _ti({"r2": {"new_task": "success"}, "r1": {"old_task": "failed"}})
+    assert classify_runs(runs, ti, RX).state == "failed"
+
+
+def test_a_failed_run_without_failed_tasks_is_fixed_by_any_real_success():
+    runs = [{"dag_run_id": "r2", "state": "success"}, {"dag_run_id": "r1", "state": "failed"}]
+    ti = _ti({"r2": {"a": "success"}, "r1": {"a": "upstream_failed"}})
+    assert classify_runs(runs, ti, RX).state == "success"
+
+
 def test_only_skipped_successes_is_none():
     ti = _ti({"r1": {"a": "skipped"}})
     assert classify_runs([{"dag_run_id": "r1", "state": "success"}], ti, RX) is None
@@ -219,6 +265,9 @@ def _cases():
         "d_running": [_run("d_running", "g1", "running")],
         "d_skipped": [_run("d_skipped", "k1", "success")],
         "d_nodata": [],
+        "d_gate": [_run("d_gate", "g2", "success"), _run("d_gate", "g1", "failed")],
+        "d_fixed": [_run("d_fixed", "f3", "success"), _run("d_fixed", "f2", "success"),
+                    _run("d_fixed", "f1", "failed")],
     }
     tis = {
         ("d_success", "s2"): [{"task_id": "a", "state": "success"}, {"task_id": "b", "state": "skipped"}],
@@ -230,6 +279,14 @@ def _cases():
         ("d_pipe", "p1"): [{"task_id": "dbt_test", "state": "failed"},
                            {"task_id": "load", "state": "failed"}],
         ("d_skipped", "k1"): [{"task_id": "a", "state": "skipped"}],
+        ("d_gate", "g2"): [{"task_id": "gate", "state": "success"},
+                           {"task_id": "dbt_test", "state": "skipped"},
+                           {"task_id": "skip_execution", "state": "success"}],
+        ("d_gate", "g1"): [{"task_id": "gate", "state": "success"},
+                           {"task_id": "dbt_test", "state": "failed"}],
+        ("d_fixed", "f3"): [{"task_id": "gate", "state": "success"}, {"task_id": "load", "state": "skipped"}],
+        ("d_fixed", "f2"): [{"task_id": "gate", "state": "success"}, {"task_id": "load", "state": "success"}],
+        ("d_fixed", "f1"): [{"task_id": "gate", "state": "success"}, {"task_id": "load", "state": "failed"}],
     }
     return runs, tis
 
@@ -244,7 +301,7 @@ def test_bulk_matches_per_dag_path_case_by_case():
     runs, tis = _cases()
     ids = list(runs)
     cat = _catalog(ids)
-    s = Settings(status_runs_lookback=2)
+    s = Settings(status_runs_lookback=3)
     fake = BulkFake(runs, tis)
     per = {d: status._one(fake, d, s, False, cat) for d in ids}
     fake.calls.clear()
@@ -260,11 +317,14 @@ def test_bulk_matches_per_dag_path_case_by_case():
     assert bulk["d_pipe"]["last_run"]["kind"] == "pipeline"
     assert bulk["d_running"]["last_run"] is None and bulk["d_skipped"]["last_run"] is None
     assert bulk["d_nodata"]["last_run"] is None
+    # A green run that skipped the failed work is not a fix; one that redid it is.
+    assert bulk["d_gate"]["last_run"]["run_id"] == "g1" and bulk["d_gate"]["last_run"]["kind"] == "tests"
+    assert bulk["d_fixed"]["last_run"]["run_id"] == "f3"
 
 
 def test_dag_with_fewer_runs_but_a_decisive_one_is_bulk():
     fake = BulkFake({"d": [_run("d", "r2", "success"), _run("d", "r1", "failed")]},
-                    {("d", "r2"): [{"task_id": "a", "state": "success"}],
+                    {("d", "r2"): [{"task_id": "load", "state": "success"}],
                      ("d", "r1"): [{"task_id": "load", "state": "failed"}]})
     out = fetch_status(fake, ["d"], Settings(), with_tasks=False, catalog=_catalog(["d"]))
     assert out["d"]["last_run"]["run_id"] == "r2"

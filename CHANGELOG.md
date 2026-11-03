@@ -12,6 +12,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 - The *blast radius* switch is replaced by *what failed and what it blocks*; a `blast` hash flag opens the new view.
+- Status: a successful run no longer fixes an older failed run of the lookback unless the tasks that failed there ran in it or in another success since. A run that takes a freshness gate's skip path ends green with the work skipped, and used to hide the failure; now the failed run stays the DAG's last decisive run. Per-DAG and bulk paths alike; the bulk path makes two extra `taskInstances/list` calls per round only for the DAGs with a failure in their window.
 
 ## [0.8.0] - 2026-11-03
 
