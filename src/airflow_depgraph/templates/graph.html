@@ -514,11 +514,14 @@ function updateLabels() {
   const labels = root.selectAll('g.labels text.lbl:not(.shelf)').style('font-size', `${10 / k}px`).style('stroke-width', `${3 / k}px`)
     .style('opacity', d => (FACET && facetSel.size && !facetBright.has(d.id)) ? .3 : 1);
   labels.attr('display', d => {
-    const inFocus = d.id === selectedId || (focusKeep && focusKeep.has(d.id));
+    // The focus set: the selection or search; the whole impact view when nothing is selected.
+    const inFocus = d.id === selectedId || (focusKeep ? focusKeep.has(d.id) : !!IMPACT);
     const dag = d.type === 'dag' && (SMALL || d.down >= 5 || fails(d) || k >= ZOOM_LABELS || d.role);
-    // Assets, triggers and sensors in the focus set are named only with "asset names" on; the selected one always.
-    const named = d.type === 'dag' || d.id === selectedId || box('assetLabels').checked;
-    return (inFocus && named) || dag ? null : 'none';
+    // Assets, triggers and sensors are named only with "asset names" on: in the focus set, or everywhere
+    // from ZOOM_LABELS, like DAGs; the selected one always.
+    const names = box('assetLabels').checked;
+    const named = d.type === 'dag' || d.id === selectedId || names;
+    return (inFocus && named) || dag || (names && k >= ZOOM_LABELS) ? null : 'none';
   });
   placeLabels(labels);
 }
