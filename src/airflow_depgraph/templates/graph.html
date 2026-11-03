@@ -199,7 +199,7 @@ aside a { color: var(--acc); }
   <label class="t" id="hardWrap"><input type="checkbox" id="onlyHard"> hard edges only</label>
   </span>
   <span class="group"><span class="gl">Focus</span>
-  <label class="t"><input type="checkbox" id="impact"> impact of failures</label>
+  <label class="t"><input type="checkbox" id="impact"> what failed and what it blocks</label>
   <label class="t"><input type="checkbox" id="onlyFail"> failing and their chain</label>
   <span id="kindWrap"><label class="t"><input type="checkbox" id="kindPipeline" checked> pipeline failed</label>
   <label class="t"><input type="checkbox" id="kindTests" checked> tests failed</label></span>
@@ -576,7 +576,7 @@ function hiddenBy(n) {
   } else if (box('hideAssets').checked) why.push(['hideAssets', 'hide assets', false]);
   if (n.kind === 'guard' && !box('showGuards').checked) why.push(['showGuards', 'show deploy guards', true]);
   if (box('onlyFail').checked) why.push(['onlyFail', 'only failing', false]);
-  if (IMPACT) why.push(['impact', 'impact of failures', false]);
+  if (IMPACT) why.push(['impact', 'what failed and what it blocks', false]);
   if (!why.length) {  // hidden because its neighbours are: every filter that hides anything
     [['onlyLinked', 'only linked DAGs', false], ['onlyActive', 'only active DAGs', false], ['onlyTags', 'only tags', false]]
       .forEach(w => { if (box(w[0]).checked && !box(w[0]).closest('label').hidden) why.push(w); });
@@ -683,7 +683,7 @@ function impactCards() {
   const active = IMPACT.roots.filter(id => IMPACT.affected(id)).sort((a, b) =>
     IMPACT.byRoot.get(b).blocked.length - IMPACT.byRoot.get(a).blocked.length || IMPACT.affected(b) - IMPACT.affected(a) || byId.get(a).label.localeCompare(byId.get(b).label));
   const quiet = IMPACT.roots.filter(id => !IMPACT.affected(id)).sort((a, b) => byId.get(a).label.localeCompare(byId.get(b).label));
-  let html = `<h3>Impact of failures</h3><p>${plural(IMPACT.roots.length, 'failing DAG', 'failing DAGs')}: ` +
+  let html = `<h3>What failed and what it blocks</h3><p>${plural(IMPACT.roots.length, 'failing DAG', 'failing DAGs')}: ` +
     `<b class="blk">${IMPACT.blocked.length}</b> blocked (cannot run until the failure is fixed), ` +
     `<b class="unv">${IMPACT.unvalidated.length}</b> ran on data whose tests failed.</p>`;
   html += active.map(card).join('');

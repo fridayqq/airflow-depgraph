@@ -13,7 +13,7 @@
 //
 // The script drives the page over the Chrome DevTools protocol: it draws a cursor, presses Fit,
 // searches for "report", picks the Finance and Marketing chips, selects revenue_model, switches
-// impact of failures on and ends on "failing and their chain". Needs node 22+ (built-in WebSocket and fetch).
+// "what failed and what it blocks" on and ends on "failing and their chain". Needs node 22+ (built-in WebSocket and fetch).
 import {writeFileSync, mkdirSync} from 'node:fs';
 
 const PORT = 9444, W = 1440, H = 860, PAGE = 'http://127.0.0.1:8765/demo.html';
