@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from .client import AirflowClient, ApiError
@@ -25,16 +25,20 @@ class LastRun:
     run_id: str
     failed_tasks: list[str]
     upstream_failed: int = 0
+    upstream_failed_tasks: list[str] = field(default_factory=list)
+    # {link node id: True (produced), False (not produced), None (unknown)} for the assets and
+    # triggers the DAG feeds, filled by outlets.annotate for failed runs.
+    outlets: dict[str, bool | None] | None = None
 
 
 def _failed_run(run_id: str, run_after: str | None, instances: list[dict],
                 tests_task_regex: str) -> LastRun:
     failed = [ti["task_id"] for ti in instances if ti.get("state") == "failed"]
-    upstream = sum(1 for ti in instances if ti.get("state") == "upstream_failed")
+    upstream = [ti["task_id"] for ti in instances if ti.get("state") == "upstream_failed"]
     only_tests = bool(failed) and all(
         re.search(tests_task_regex, t, re.IGNORECASE) for t in failed)
     return LastRun("failed", "tests" if only_tests else "pipeline",
-                   run_after, run_id, failed, upstream)
+                   run_after, run_id, failed, len(upstream), upstream)
 
 
 def classify_runs(runs: list[dict], task_instances: Callable[[str], list[dict]],

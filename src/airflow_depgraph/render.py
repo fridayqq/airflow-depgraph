@@ -56,11 +56,15 @@ def build_view(snap: Snapshot, s: Settings, status_override: dict | None = None)
         node["tags"] = list((cat or {}).get("tags") or [])
         node["schedule"] = (cat or {}).get("schedule") or info.get("schedule")
         run = info.get("last_run") or {}
+        if run.get("run_after"):
+            node["ran"] = run["run_after"]         # when the last decisive run started
         if dag_id in override:
             node["fail"] = dict(override[dag_id])
         elif run.get("state") == "failed":
             node["fail"] = {"kind": run.get("kind") or "pipeline", "paused": paused,
                             "date": run.get("run_after")}
+            if isinstance(run.get("outlets"), dict):
+                node["fail"]["outlets"] = dict(run["outlets"])
         if highlight and highlight.search(dag_id):
             node["hl"] = True
 

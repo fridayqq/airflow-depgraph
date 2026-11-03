@@ -9,7 +9,7 @@
   --bg: #edf0f2; --grid: #dfe4e8; --grid2: #cfd6dc; --panel: #ffffff; --fg: #172029; --mut: #5c6b78;
   --line: #d6dce1; --acc: #1d5bbf; --acc-soft: #e4ecfa;
   --c-dag: #1d5bbf; --c-asset: #e2622b; --c-trigger: #15a06f; --c-sensor: #e0a100;
-  --critical: #cf3434; --warning: #eab308; --edge: #a9b4bd; --guard: #8b969f; --shadow: rgba(23, 32, 41, .18);
+  --critical: #cf3434; --warning: #eab308; --blocked: #e8731a; --unvalidated: #8b5cf6; --edge: #a9b4bd; --guard: #8b969f; --shadow: rgba(23, 32, 41, .18);
   --sans: "IBM Plex Sans", "Segoe UI Variable", "Helvetica Neue", system-ui, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
 }
@@ -18,14 +18,14 @@
     --bg: #0e161d; --grid: #172129; --grid2: #1f2c36; --panel: #131e27; --fg: #e8edf1; --mut: #93a3b1;
     --line: #25323d; --acc: #5b93ea; --acc-soft: #182a44;
     --c-dag: #4f8ae6; --c-asset: #e06a35; --c-trigger: #22b47c; --c-sensor: #d9a400;
-    --edge: #44535f; --guard: #6c7a86; --shadow: rgba(0, 0, 0, .55);
+    --blocked: #f0843a; --unvalidated: #a78bfa; --edge: #44535f; --guard: #6c7a86; --shadow: rgba(0, 0, 0, .55);
   }
 }
 :root[data-theme="dark"] {
   --bg: #0e161d; --grid: #172129; --grid2: #1f2c36; --panel: #131e27; --fg: #e8edf1; --mut: #93a3b1;
   --line: #25323d; --acc: #5b93ea; --acc-soft: #182a44;
   --c-dag: #4f8ae6; --c-asset: #e06a35; --c-trigger: #22b47c; --c-sensor: #d9a400;
-  --edge: #44535f; --guard: #6c7a86; --shadow: rgba(0, 0, 0, .55);
+  --blocked: #f0843a; --unvalidated: #a78bfa; --edge: #44535f; --guard: #6c7a86; --shadow: rgba(0, 0, 0, .55);
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
@@ -102,6 +102,12 @@ label.t input:checked + *, label.t:has(input:checked) { color: var(--fg); }
 .legend i.ln.soft { border-top-style: dashed; }
 .legend i.ring.warn { border-color: var(--warning); }
 .legend i.ring.hl { border-color: var(--fg); }
+aside .card { margin: 10px 0 2px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+aside .card h4 { margin: 0; cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--fg); }
+aside .card h4::after { content: none; }
+aside .card h4:hover { color: var(--acc); }
+aside .card p { margin: 2px 0 4px; }
+.blk { color: var(--blocked); } .unv { color: var(--unvalidated); } .crit { color: var(--critical); }
 
 /* The drafting surface: fine grid with a heavier line every fifth square. */
 main { flex: 1; display: grid; grid-template-columns: 1fr 340px; min-height: 0; }
@@ -193,8 +199,10 @@ aside a { color: var(--acc); }
   <label class="t" id="hardWrap"><input type="checkbox" id="onlyHard"> hard edges only</label>
   </span>
   <span class="group"><span class="gl">Focus</span>
+  <label class="t"><input type="checkbox" id="impact"> impact of failures</label>
   <label class="t"><input type="checkbox" id="onlyFail"> failing and their chain</label>
-  <label class="t"><input type="checkbox" id="blast"> blast radius</label>
+  <span id="kindWrap"><label class="t"><input type="checkbox" id="kindPipeline" checked> pipeline failed</label>
+  <label class="t"><input type="checkbox" id="kindTests" checked> tests failed</label></span>
   <label class="t" id="hlWrap"><input type="checkbox" id="hl"> __HL_LABEL__</label>
   </span>
   <span class="legend">
@@ -208,6 +216,8 @@ aside a { color: var(--acc); }
     <span id="lgSoft"><i class="ln soft"></i>soft</span>
     <span><i class="ring"></i>failed (pipeline)</span>
     <span><i class="ring warn"></i>failed (tests only)</span>
+    <span id="lgBlocked"><i style="background:var(--blocked)"></i>blocked</span>
+    <span id="lgUnval"><i style="background:var(--unvalidated)"></i>ran on unvalidated data</span>
     <span id="lgHl"><i class="ring hl"></i>__HL_LABEL__</span>
   </span>
   </div>
@@ -223,6 +233,7 @@ aside a { color: var(--acc); }
 <script>
 const DATA = __DATA__;
 const META = DATA.meta || {};
+const box = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
 // Colours are read once and cached; the prefers-color-scheme listener clears the cache.
 const PALETTE = {};
@@ -237,6 +248,12 @@ DATA.edges.forEach(e => {
   e.inf = !!(byId.get(e.s).inferred || byId.get(e.t).inferred);
   e.guard = isGuard(e.s) || isGuard(e.t);
 });
+// A tests-only failure that blocks a DAG is a pipeline failure for the page: fail.ekind.
+impactKinds({nodes: DATA.nodes, edges: DATA.edges, byId});
+// The kind filter: which failures count, everywhere on the page.
+const KINDS = () => ({pipeline: box('kindPipeline').checked, tests: box('kindTests').checked});
+const fails = n => failingOf(n, KINDS());
+const KIND_TEXT = n => failKind(n) === 'tests' ? 'tests failed' : (n.fail.kind === 'tests' ? 'tests failed, data blocked' : 'pipeline failed');
 // Asset edges carry a strength when the snapshot read the asset schedules: soft edges (the DAG runs
 // without the asset) are dashed, and "hard edges only" leaves them out of the graph and the reach.
 const HAS_STRENGTH = DATA.edges.some(e => e.strength);
@@ -251,7 +268,6 @@ const zoom = d3.zoom().scaleExtent([0.15, 6]).on('zoom', ev => { root.attr('tran
 const scale = () => d3.zoomTransform(svg.node()).k;
 svg.call(zoom);
 const tip = document.getElementById('tip'), side = document.getElementById('side'), qEl = document.getElementById('q');
-const box = id => document.getElementById(id);
 refreshAdj();
 let nodes = [], links = [], nodeMap = new Map(), sim = null;
 let selectedId = null, searchKeep = null, lastTargets = [];
@@ -288,37 +304,73 @@ function renderFacet() {
 const hasTag = n => tagged(n, TAGS);
 const loose = n => looseNode(n, box('showGuards').checked);
 
+// Impact of failures (the "impact" toggle): the failing DAGs, what they block and what ran on
+// unvalidated data, in columns by hop; the failures that affect nothing on a row under the graph.
+let IMPACT = null;   // impact() of the current filters while the toggle is on, with adjOut/adjIn of its links
+const impactOn = () => box('impact').checked;
+const filterState = extra => ({
+  onlyTags: box('onlyTags').checked, onlyActive: box('onlyActive').checked, conn: box('conn').checked,
+  showGuards: box('showGuards').checked, onlyHard: box('onlyHard').checked, blast: false,
+  onlyFail: box('onlyFail').checked, kinds: KINDS(), ...extra});
+function impactView() {
+  // The tag and active filters apply; hard/soft is the impact's own business. A failure without
+  // any link is not in the linked set: taken from the catalog filters so it can sit on the row.
+  const base = filterView({nodes: DATA.nodes, edges: DATA.edges, byId, tags: TAGS}, filterState({onlyHard: false, onlyFail: false}));
+  DATA.nodes.filter(n => n.type === 'dag' && fails(n) && passesDagFilters(n)).forEach(n => base.keep.add(n.id));
+  const im = impact({nodes: DATA.nodes, edges: DATA.edges, byId}, {keep: base.keep, guards: box('showGuards').checked, kinds: KINDS()});
+  im.adjOut = new Map(); im.adjIn = new Map();
+  im.links.forEach(l => {
+    if (!im.adjOut.has(l.s)) im.adjOut.set(l.s, []);
+    if (!im.adjIn.has(l.t)) im.adjIn.set(l.t, []);
+    im.adjOut.get(l.s).push(l.t); im.adjIn.get(l.t).push(l.s);
+  });
+  im.affected = id => { const r = im.byRoot.get(id); return r ? r.blocked.length + r.unvalidated.length : 0; };
+  im.leaf = id => im.role.get(id) === 'root' && !im.affected(id) && !im.cause.has(id);
+  return im;
+}
+
 function buildView() {
   const hideAssets = box('hideAssets').checked;
-  const view = filterView({nodes: DATA.nodes, edges: DATA.edges, byId, tags: TAGS}, {
-    onlyTags: box('onlyTags').checked, onlyActive: box('onlyActive').checked, conn: box('conn').checked,
-    showGuards: box('showGuards').checked, onlyHard: box('onlyHard').checked, blast: box('blast').checked,
-    onlyFail: box('onlyFail').checked});
-  let keep = view.keep, es = view.edges;
-  if (hideAssets) {  // dag -> link(s) -> dag shown as dag -> dag
-    const c = collapseLinks([...keep], es, byId);
-    keep = new Set(c.keep);
-    es = c.edges;
-  }
+  IMPACT = impactOn() ? impactView() : null;
   const prev = nodeMap;
-  nodes = [...keep].map(id => Object.assign({}, byId.get(id), prev.has(id) ? {x: prev.get(id).x, y: prev.get(id).y} : {}));
-  // With "linked DAGs only" off, the DAGs without any link sit on a shelf: rows under the graph,
-  // placed by placeShelf() on every tick, outside the forces.
-  if (!box('onlyLinked').checked) {
-    DATA.nodes.filter(n => n.type === 'dag' && loose(n) && passesDagFilters(n))
-      .sort((a, b) => a.label.localeCompare(b.label))
-      .forEach(n => nodes.push(Object.assign({}, n, {shelf: true})));
+  if (IMPACT) {
+    nodes = [...IMPACT.hop.keys()].map(id => Object.assign({}, byId.get(id), prev.has(id) ? {x: prev.get(id).x, y: prev.get(id).y} : {},
+      {role: IMPACT.role.get(id), hop: IMPACT.hop.get(id), shelf: IMPACT.leaf(id),
+       down: IMPACT.role.get(id) === 'root' ? IMPACT.affected(id) : byId.get(id).down}));
+    links = IMPACT.links.map(l => ({source: l.s, target: l.t, impact: l.kind, inf: false, guard: false, soft: false}));
+  } else {
+    const view = filterView({nodes: DATA.nodes, edges: DATA.edges, byId, tags: TAGS}, filterState());
+    let keep = view.keep, es = view.edges;
+    if (hideAssets) {  // dag -> link(s) -> dag shown as dag -> dag
+      const c = collapseLinks([...keep], es, byId);
+      keep = new Set(c.keep);
+      es = c.edges;
+    }
+    nodes = [...keep].map(id => Object.assign({}, byId.get(id), prev.has(id) ? {x: prev.get(id).x, y: prev.get(id).y} : {}));
+    // With "linked DAGs only" off, the DAGs without any link sit on a shelf: rows under the graph,
+    // placed by placeShelf() on every tick, outside the forces.
+    if (!box('onlyLinked').checked) {
+      DATA.nodes.filter(n => n.type === 'dag' && loose(n) && passesDagFilters(n))
+        .sort((a, b) => a.label.localeCompare(b.label))
+        .forEach(n => nodes.push(Object.assign({}, n, {shelf: true})));
+    }
+    links = es.map(e => ({source: e.s, target: e.t, via: e.via, inf: e.inf, guard: e.guard, soft: e.strength === 'soft'}));
   }
   nodeMap = new Map(nodes.map(n => [n.id, n]));
-  links = es.map(e => ({source: e.s, target: e.t, via: e.via, inf: e.inf, guard: e.guard, soft: e.strength === 'soft'}));
+  box('lgBlocked').hidden = box('lgUnval').hidden = !IMPACT;
   pendingFit = true;  // a filter toggle refits once the layout settles (search does not come here)
   draw();
   updateShown();
 }
 
-// "shown N of M DAGs": the DAG nodes drawn now.
+// "shown N of M DAGs": the DAG nodes drawn now. In impact mode: the failures and what they did.
 function updateShown() {
   const total = DATA.nodes.filter(n => n.type === 'dag').length, shown = nodes.filter(n => n.type === 'dag').length;
+  if (IMPACT) {
+    box('shown').innerHTML = `<b class="crit">${IMPACT.roots.length}</b> failing · <b class="blk">${IMPACT.blocked.length}</b> blocked · ` +
+      `<b class="unv">${IMPACT.unvalidated.length}</b> on unvalidated data · of ${plural(total, 'DAG', 'DAGs')}`;
+    return;
+  }
   box('shown').textContent = `shown ${shown} of ${plural(total, 'DAG', 'DAGs')}`;
 }
 
@@ -330,8 +382,13 @@ function draw() {
   svg.append('defs').append('marker').attr('id', 'arrow').attr('viewBox', '0 -4 8 8').attr('refX', 7).attr('refY', 0)
     .attr('markerWidth', 6).attr('markerHeight', 6).attr('orient', 'auto')
     .append('path').attr('d', 'M0,-3L7,0L0,3').attr('fill', edgeCol);
+  [['arrowBlocked', '--blocked'], ['arrowUnval', '--unvalidated']].forEach(([id, c]) =>
+    svg.select('defs').append('marker').attr('id', id).attr('viewBox', '0 -4 8 8').attr('refX', 7).attr('refY', 0)
+      .attr('markerWidth', 5).attr('markerHeight', 5).attr('orient', 'auto')
+      .append('path').attr('d', 'M0,-3L7,0L0,3').attr('fill', css(c)));
+  const marker = l => l.impact === 'blocked' ? 'url(#arrowBlocked)' : l.impact ? 'url(#arrowUnval)' : 'url(#arrow)';
   const link = root.append('g').attr('stroke-opacity', .6).selectAll('line').data(links).join('line')
-    .attr('stroke-width', 1.2).attr('marker-end', 'url(#arrow)')
+    .attr('stroke-width', l => l.impact ? 2 : 1.2).attr('marker-end', marker)
     .attr('stroke-dasharray', l => l.inf || l.guard ? '4 3' : l.soft ? '7 5' : null);
   const node = root.append('g').selectAll('g').data(nodes, d => d.id).join('g').attr('class', 'n').style('cursor', 'pointer')
     .call(d3.drag().filter((ev, d) => !ev.ctrlKey && !ev.button && !d.shelf)
@@ -346,8 +403,13 @@ function draw() {
     else g.append('rect').attr('x', -R).attr('y', -R).attr('width', 2 * R).attr('height', 2 * R).attr('transform', 'rotate(45)')
       .attr('fill', d.inferred ? css('--bg') : c).attr('stroke-dasharray', d.inferred ? '2 1.5' : null);
     if (d.paused) g.select('circle,rect,path').attr('fill-opacity', .5);
-    if (failing(d)) g.append('circle').attr('r', R + 3).attr('fill', 'none')
-      .attr('stroke', d.fail.kind === 'tests' ? css('--warning') : css('--critical')).attr('stroke-width', 2.5);
+    if (d.role === 'root') g.select('circle').attr('fill', css('--critical'));
+    if (d.role === 'blocked') g.select('circle').attr('fill', css('--blocked'));
+    if (d.role === 'unvalidated') g.select('circle').attr('fill', css('--unvalidated'));
+    if (IMPACT && IMPACT.cause.has(d.id)) g.append('circle').attr('r', R + 6).attr('fill', 'none')  // failed after another failure
+      .attr('stroke', css('--unvalidated')).attr('stroke-width', 2).attr('stroke-dasharray', '3 2');
+    if (fails(d)) g.append('circle').attr('r', R + 3).attr('fill', 'none')
+      .attr('stroke', failKind(d) === 'tests' ? css('--warning') : css('--critical')).attr('stroke-width', 2.5);
   });
   node.on('mouseenter', (ev, d) => { tip.style.display = 'block'; tip.innerHTML = `<b>${esc(d.label)}</b> ` + facts(d); })
     .on('mousemove', ev => { tip.style.left = (ev.clientX + 14) + 'px'; tip.style.top = (ev.clientY + 14) + 'px'; })
@@ -360,7 +422,7 @@ function draw() {
   // Where a link ends: at the target's rim, so the arrowhead stays visible.
   const rim = l => {
     const dx = l.target.x - l.source.x, dy = l.target.y - l.source.y, len = Math.hypot(dx, dy) || 1;
-    const k = (r(l.target) + (failing(l.target) ? 6 : 2)) / len;
+    const k = (r(l.target) + (fails(l.target) ? 6 : 2)) / len;
     return {x: l.target.x - dx * k, y: l.target.y - dy * k};
   };
   const shelfTitle = root.append('g').attr('class', 'labels').append('text').attr('class', 'lbl shelf')
@@ -372,13 +434,13 @@ function draw() {
     node.attr('transform', d => `translate(${d.x},${d.y})`);
     placeLabels(lbl);
   };
-  sim = d3.forceSimulation(nodes)
+  sim = (IMPACT ? impactLayout() : d3.forceSimulation(nodes)
     .force('link', d3.forceLink(links).id(d => d.id).distance(40).strength(.6))
     .force('charge', d3.forceManyBody().strength(-120))
     .force('center', d3.forceCenter(W() / 2, H() / 2))
     .force('gravityX', d3.forceX(W() / 2).strength(0.06))  // keeps small disconnected components near the centre
     .force('gravityY', d3.forceY(H() / 2).strength(0.06))
-    .force('collide', d3.forceCollide(d => r(d) + 4))
+    .force('collide', d3.forceCollide(d => r(d) + 4)))
     .on('tick', ticked)
     .on('end', () => {  // layout settled after a filter toggle or the page load
       if (!pendingFit) return;
@@ -393,24 +455,51 @@ function draw() {
   applyHighlight();
 }
 
+// Impact layout: a column per hop, left to right (failures, what they fed, what that did to),
+// ordered inside a column by the mean position of the column before (fewer crossings).
+const COL = 260, COL_X0 = 120, ROW = 70;
+function impactLayout() {
+  const id = v => typeof v === 'object' ? v.id : v;
+  const inn = new Map();
+  links.forEach(l => { const t = id(l.target); if (!inn.has(t)) inn.set(t, []); inn.get(t).push(id(l.source)); });
+  const byHop = d3.group(nodes.filter(n => !n.shelf), n => n.hop), ty = new Map();
+  for (const h of [...byHop.keys()].sort((a, b) => a - b)) {
+    const col = byHop.get(h).map(n => ({n, y: h === 0 ? -n.down : (d3.mean((inn.get(n.id) || []).map(p => ty.get(p)).filter(y => y != null)) ?? 0)}));
+    col.sort((a, b) => a.y - b.y || a.n.label.localeCompare(b.n.label));
+    const mid = h === 0 ? 0 : d3.mean(col, c => c.y), gap = isLinkNode(col[0].n) ? ROW / 2 : ROW;
+    const crowded = col.length > 8 && !isLinkNode(col[0].n);
+    col.forEach((c, i) => { ty.set(c.n.id, mid + (i - (col.length - 1) / 2) * gap); c.n.tx = COL_X0 + h * COL + (crowded && i % 2 ? COL * .4 : 0); });
+  }
+  nodes.forEach(n => { n.ty = (ty.get(n.id) ?? 0) + H() / 2; if (n.tx == null) n.tx = COL_X0 + (n.hop || 0) * COL; });
+  return d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(links).id(d => d.id).distance(COL / 2).strength(.08))
+    .force('charge', d3.forceManyBody().strength(-260))
+    .force('col', d3.forceX(d => d.tx).strength(1))
+    .force('row', d3.forceY(d => d.ty).strength(.5))
+    .force('collide', d3.forceCollide(d => r(d) + 12));
+}
+
 // The shelf: DAGs without any link, in a square grid under the lowest linked node, centred on
-// the graph. Fixed positions, so the forces leave them alone.
+// the graph. Fixed positions, so the forces leave them alone. In impact mode: the failures that
+// affect nothing, in a few named columns.
 const SHELF_STEP = 16, SHELF_GAP = 40;
 function placeShelf(title) {
   const shelf = nodes.filter(n => n.shelf);
   if (!shelf.length) { title.attr('display', 'none'); return; }
   const rest = nodes.filter(n => !n.shelf && n.x != null);
   const cx = rest.length ? (d3.min(rest, n => n.x) + d3.max(rest, n => n.x)) / 2 : W() / 2;
-  const cols = Math.ceil(Math.sqrt(shelf.length));
-  const top = (rest.length ? d3.max(rest, n => n.y + r(n)) : H() / 2) + SHELF_GAP;
-  const x0 = cx - (Math.min(cols, shelf.length) - 1) * SHELF_STEP / 2;
+  const stepX = IMPACT ? 520 : SHELF_STEP, stepY = IMPACT ? 34 : SHELF_STEP;
+  const cols = IMPACT ? Math.ceil(shelf.length / 10) : Math.ceil(Math.sqrt(shelf.length));
+  const top = (rest.length ? d3.max(rest, n => n.y + r(n)) : H() / 2) + SHELF_GAP + (IMPACT ? 30 : 0);
+  const x0 = cx - (Math.min(cols, shelf.length) - 1) * stepX / 2;
   shelf.forEach((n, i) => {
-    n.fx = n.x = x0 + (i % cols) * SHELF_STEP;
-    n.fy = n.y = top + Math.floor(i / cols) * SHELF_STEP;
+    n.fx = n.x = x0 + (i % cols) * stepX;
+    n.fy = n.y = top + Math.floor(i / cols) * stepY;
   });
   const k = scale();
-  title.attr('display', null).attr('text-anchor', 'start').style('font-size', `${11 / k}px`).style('stroke-width', `${3 / k}px`).text(`${plural(shelf.length, 'DAG', 'DAGs')} without dependencies`)
-    .attr('transform', `translate(${x0 - r(shelf[0])},${top - r(shelf[0]) - 8 / k})`);
+  title.attr('display', null).attr('text-anchor', 'start').style('font-size', `${11 / k}px`).style('stroke-width', `${3 / k}px`)
+    .text(IMPACT ? `${plural(shelf.length, 'DAG', 'DAGs')} failed, affect nothing` : `${plural(shelf.length, 'DAG', 'DAGs')} without dependencies`)
+    .attr('transform', `translate(${x0 - r(shelf[0]) - (IMPACT ? 60 : 0)},${top - r(shelf[0]) - (IMPACT ? 22 : 8) / k})`);
 }
 
 // A label sits under its node, 10 screen pixels below the rim.
@@ -421,11 +510,12 @@ const ZOOM_LABELS = 1.8;
 const BIG_GRAPH = 800;   // nodes; above this the layout is pre-computed and settles faster
 function updateLabels() {
   const k = scale();  // label text and halo stay 10 and 3 screen pixels whatever the zoom
+  root.selectAll('text.lbl.shelf').style('font-size', `${11 / k}px`).style('stroke-width', `${3 / k}px`);
   const labels = root.selectAll('g.labels text.lbl:not(.shelf)').style('font-size', `${10 / k}px`).style('stroke-width', `${3 / k}px`)
     .style('opacity', d => (FACET && facetSel.size && !facetBright.has(d.id)) ? .3 : 1);
   labels.attr('display', d => {
     const inFocus = d.id === selectedId || (focusKeep && focusKeep.has(d.id));
-    const dag = d.type === 'dag' && (SMALL || d.down >= 5 || failing(d) || k >= ZOOM_LABELS);
+    const dag = d.type === 'dag' && (SMALL || d.down >= 5 || fails(d) || k >= ZOOM_LABELS || d.role);
     // Assets, triggers and sensors in the focus set are named only with "asset names" on; the selected one always.
     const named = d.type === 'dag' || d.id === selectedId || box('assetLabels').checked;
     return (inFocus && named) || dag ? null : 'none';
@@ -438,8 +528,15 @@ function facts(d) {
   if (d.inferred) f += ` <span class="badge">${d.kind === 'guard' ? 'deploy guard' : 'inferred'}</span>`;
   if (d.paused) f += ' <span class="badge">paused</span>';
   (d.tags || []).forEach(t => { f += ` <span class="badge">#${esc(t)}</span>`; });
-  if (d.fail) f += ` <span class="badge ${d.fail.kind === 'tests' ? 'warn' : 'crit'}">${d.fail.kind === 'tests' ? 'tests failed' : 'pipeline failed'}${d.fail.paused ? ' · paused' : ''}</span> ${esc(d.fail.date || '')}`;
-  return f + `<br>↓ ${plural(d.down, 'DAG', 'DAGs')} ${d.down === 1 ? 'depends' : 'depend'} on it · ↑ waits for ${plural(d.up, 'DAG', 'DAGs')}`;
+  if (d.fail) f += ` <span class="badge ${failKind(d) === 'tests' ? 'warn' : 'crit'}">${KIND_TEXT(d)}${d.fail.paused ? ' · paused' : ''}</span> ${esc(d.fail.date || '')}`;
+  f += `<br>↓ ${plural(d.down, 'DAG', 'DAGs')} ${d.down === 1 ? 'depends' : 'depend'} on it · ↑ waits for ${plural(d.up, 'DAG', 'DAGs')}`;
+  if (IMPACT && IMPACT.from.has(d.id)) {
+    const by = kind => [...new Set(IMPACT.from.get(d.id).filter(x => x.kind === kind).map(x => byId.get(x.root).label))];
+    const b = by('blocked'), u = by('unvalidated');
+    if (b.length) f += `<br><span class="blk">blocked</span> by ${esc(b.join(', '))}`;
+    if (u.length) f += `<br><span class="unv">ran on unvalidated data</span> from ${esc(u.join(', '))}`;
+  }
+  return f;
 }
 
 // DAGs reached from startId along adj, one hop per DAG step (links in between are free), each with the link it came through.
@@ -479,6 +576,7 @@ function hiddenBy(n) {
   } else if (box('hideAssets').checked) why.push(['hideAssets', 'hide assets', false]);
   if (n.kind === 'guard' && !box('showGuards').checked) why.push(['showGuards', 'show deploy guards', true]);
   if (box('onlyFail').checked) why.push(['onlyFail', 'only failing', false]);
+  if (IMPACT) why.push(['impact', 'impact of failures', false]);
   if (!why.length) {  // hidden because its neighbours are: every filter that hides anything
     [['onlyLinked', 'only linked DAGs', false], ['onlyActive', 'only active DAGs', false], ['onlyTags', 'only tags', false]]
       .forEach(w => { if (box(w[0]).checked && !box(w[0]).closest('label').hidden) why.push(w); });
@@ -522,10 +620,10 @@ function copyText(text, btn) {
 }
 
 function wireRows(root) {
-  root.querySelectorAll('li[data-id]').forEach(el => el.onclick = () => { select(el.dataset.id); fitTo([el.dataset.id]); });
+  root.querySelectorAll('li[data-id], h4[data-id]').forEach(el => el.onclick = () => { select(el.dataset.id); fitTo([el.dataset.id]); });
 }
 
-// Panel with nothing selected: intro, the blast-radius list and the unlinked list.
+// Panel with nothing selected: intro, the facet summary, the impact cards and the unlinked list.
 function renderEmpty(msg) {
   let html = `<h2>${esc(msg || 'Click a node')}</h2>`;
   if (!msg) html += `<p class="hint">Node size shows how many DAGs depend on it, transitively. Click to highlight everything upstream and downstream. Double-click pins or releases a node. Scroll to zoom, drag to pan.<br><br>Search: <code>dag</code> focuses the first match, <code>+dag</code> adds its upstream, <code>dag+</code> its downstream, <code>2+dag+3</code> limits the depth.</p>`;
@@ -544,12 +642,8 @@ function renderEmpty(msg) {
       .map(([v, s]) => `<li>${esc(v)} <span class="hint">· ${plural(s.size, 'linked DAG', 'linked DAGs')}</span></li>`).join('');
     html += '<h4>Linked across</h4>' + (rows ? `<ul>${rows}</ul>` : '<p class="hint">none</p>');
   }
-  if (box('blast').checked) {
-    const failingDags = DATA.nodes.filter(n => n.type === 'dag' && failing(n) && passesDagFilters(n)).sort((a, b) => b.down - a.down || a.label.localeCompare(b.label));
-    html += `<h3>Failing DAGs (${failingDags.length})</h3><ul>` + failingDags.map(n =>
-      `<li data-id="${esc(n.id)}">⚠ ${esc(n.label)} <span class="hint">· ${n.down} downstream</span></li>`).join('') + '</ul>';
-  }
-  const unlinkedOn = !box('onlyLinked').checked;
+  if (IMPACT) html += impactCards();
+  const unlinkedOn = !box('onlyLinked').checked && !IMPACT;
   if (unlinkedOn) html += `<h3>DAGs without dependencies (${listUnlinked().length})</h3><input type="search" id="unlinkedQ" placeholder="filter…" aria-label="Filter DAGs without dependencies"><ul id="unlinkedUl"></ul>`;
   side.innerHTML = html;
   wireRows(side);
@@ -563,6 +657,41 @@ function renderEmpty(msg) {
   }
 }
 
+// A row of a hop list: name, the failing marker, the highlight star, the link it came through.
+const hopRow = h => {
+  const n = byId.get(h.id);
+  return `<li data-id="${esc(n.id)}">${fails(n) ? '⚠ ' : ''}${esc(n.label)}${n.hl ? ' ★' : ''}` +
+    `<span class="hint"> · ${h.hop} hop${h.hop > 1 ? 's' : ''}${h.via ? ' via ' + esc(h.via) : ''}</span></li>`;
+};
+const kindBadge = n => `<span class="badge ${failKind(n) === 'tests' ? 'warn' : 'crit'}">${failKind(n) === 'tests' ? 'tests' : 'pipeline'}</span>`;
+
+// One card per failure that affected something, the biggest first; then the failures that did not.
+function impactCards() {
+  const hl = list => list.filter(h => byId.get(h.id).hl).length;
+  const card = id => {
+    const n = byId.get(id), {blocked, unvalidated} = IMPACT.byRoot.get(id), stars = hl(blocked) + hl(unvalidated);
+    const after = (IMPACT.cause.get(id) || []).map(c => byId.get(c).label);
+    const parts = [];
+    if (blocked.length) parts.push(`blocks <b class="blk">${plural(blocked.length, 'DAG', 'DAGs')}</b>`);
+    if (unvalidated.length) parts.push(`<b class="unv">${plural(unvalidated.length, 'DAG', 'DAGs')}</b> ran on unvalidated data`);
+    if (stars) parts.push(`${stars} ${esc(HL_LABEL)}`);
+    return `<div class="card"><h4 data-id="${esc(id)}">⚠ ${esc(n.label)} ${kindBadge(n)}</h4>` +
+      `<p class="hint">${parts.join(' · ')}${after.length ? `<br>failed after ${esc(after.join(', '))}` : ''}</p>` +
+      (blocked.length ? `<h4>blocked (${blocked.length})</h4><ul>${blocked.map(hopRow).join('')}</ul>` : '') +
+      (unvalidated.length ? `<h4>unvalidated data (${unvalidated.length})</h4><ul>${unvalidated.map(hopRow).join('')}</ul>` : '') + '</div>';
+  };
+  const active = IMPACT.roots.filter(id => IMPACT.affected(id)).sort((a, b) =>
+    IMPACT.byRoot.get(b).blocked.length - IMPACT.byRoot.get(a).blocked.length || IMPACT.affected(b) - IMPACT.affected(a) || byId.get(a).label.localeCompare(byId.get(b).label));
+  const quiet = IMPACT.roots.filter(id => !IMPACT.affected(id)).sort((a, b) => byId.get(a).label.localeCompare(byId.get(b).label));
+  let html = `<h3>Impact of failures</h3><p>${plural(IMPACT.roots.length, 'failing DAG', 'failing DAGs')}: ` +
+    `<b class="blk">${IMPACT.blocked.length}</b> blocked (cannot run until the failure is fixed), ` +
+    `<b class="unv">${IMPACT.unvalidated.length}</b> ran on data whose tests failed.</p>`;
+  html += active.map(card).join('');
+  if (quiet.length) html += `<h4>Failed, affect nothing (${quiet.length})</h4><ul>` + quiet.map(id =>
+    `<li data-id="${esc(id)}">${esc(byId.get(id).label)} ${kindBadge(byId.get(id))}${IMPACT.cause.has(id) ? ` <span class="hint">· after ${esc(IMPACT.cause.get(id).map(c => byId.get(c).label).join(', '))}</span>` : ''}</li>`).join('') + '</ul>';
+  return html;
+}
+
 function renderSide(d, msg) {
   if (!d) { renderEmpty(msg); return; }
   const base = /^https?:\/\//.test(META.source || '') ? String(META.source).replace(/\/+$/, '') : '';
@@ -571,7 +700,10 @@ function renderSide(d, msg) {
     side.innerHTML = `<h2>${esc(d.label)}</h2><div>${facts(d)}</div><p class="hint">No explicit dependencies: no asset, trigger or sensor links this DAG to another.</p>` + openLink;
     return;
   }
-  const down = dagHops(d.id, outM, depthLimit.down), up = dagHops(d.id, inM, depthLimit.up);
+  // In impact mode the lists follow the drawn links: what this failure did, and which failure did it.
+  const down = IMPACT ? dagHops(d.id, IMPACT.adjOut, Infinity) : dagHops(d.id, outM, depthLimit.down);
+  const up = IMPACT ? dagHops(d.id, IMPACT.adjIn, Infinity) : dagHops(d.id, inM, depthLimit.up);
+  const downTitle = IMPACT ? '↓ Affected' : '↓ Downstream', upTitle = IMPACT ? '↑ Caused by' : '↑ Upstream';
   const SRC = {rendered: 'rendered fields', source: 'DAG source', logs: 'task log'};
   const why = d.inferred ? `<p class="hint">inferred from ${esc(SRC[d.inferred] || d.inferred)}` +
     (d.kind === 'guard' ? '; a deploy guard: it waits for the upstream DAG <b>not</b> to be running.' : '.') + '</p>' : '';
@@ -583,15 +715,16 @@ function renderSide(d, msg) {
     hops.forEach(h => {
       if (h.hop !== cur) { if (cur) out.push('</ul>'); cur = h.hop; out.push(`<h4>${h.hop} hop${h.hop > 1 ? 's' : ''}</h4><ul>`); }
       const n = byId.get(h.id);
-      out.push(`<li data-id="${esc(n.id)}">${failing(n) ? '⚠ ' : ''}${esc(n.label)}${n.hl ? ' ★' : ''}` +
+      const role = IMPACT && IMPACT.role.get(n.id) !== 'root' ? ` <span class="${IMPACT.role.get(n.id) === 'blocked' ? 'blk' : 'unv'}">${IMPACT.role.get(n.id)}</span>` : '';
+      out.push(`<li data-id="${esc(n.id)}">${fails(n) ? '⚠ ' : ''}${esc(n.label)}${n.hl ? ' ★' : ''}${role}` +
         `${h.via ? ` <span class="hint">· via ${esc(h.via)}</span>` : ''}${nodeMap.has(n.id) ? '' : ' <span class="hint">(hidden)</span>'}</li>`);
     });
     out.push('</ul>');
     return out.join('');
   };
   side.innerHTML = `<h2>${esc(d.label)}</h2><div>${facts(d)}</div>` + hiddenNote(d) + why +
-    `<h3>↓ Downstream (${down.length}) <button type="button" class="copy" id="copyDown">Copy</button></h3>${hopGroups(down)}` +
-    `<h3>↑ Upstream (${up.length}) <button type="button" class="copy" id="copyUp">Copy</button></h3>${hopGroups(up)}` +
+    `<h3>${downTitle} (${down.length}) <button type="button" class="copy" id="copyDown">Copy</button></h3>${hopGroups(down)}` +
+    `<h3>${upTitle} (${up.length}) <button type="button" class="copy" id="copyUp">Copy</button></h3>${hopGroups(up)}` +
     openLink;
   wireRows(side);
   document.getElementById('copyDown').onclick = e => copyText(hopText(down), e.target);
@@ -613,7 +746,7 @@ function select(id) {
 
 function applyHighlight() {
   const hl = box('hl').checked;
-  const keep = searchKeep || (selectedId ? chain(selectedId, outM, inM, byId) : null);
+  const keep = searchKeep || (selectedId ? (IMPACT ? chain(selectedId, IMPACT.adjOut, IMPACT.adjIn, byId) : chain(selectedId, outM, inM, byId)) : null);
   focusKeep = keep;
   const lit = d => hl && d.hl;
   const outline = d => d.inferred ? css(d.kind === 'guard' ? '--guard' : '--c-sensor') : null;
@@ -627,8 +760,9 @@ function applyHighlight() {
   root.selectAll('g.n').style('opacity', d => (keep && !keep.has(d.id)) ? .12 : (dim(d) ? .18 : 1))
     .each(function (d) { d3.select(this).select('circle,rect,path').attr('stroke', lit(d) ? css('--fg') : outline(d)).attr('stroke-width', lit(d) ? 2 : (d.inferred ? 1.5 : null)); });
   const both = (l, set) => set.has(l.source.id) && set.has(l.target.id);
-  root.selectAll('line').style('opacity', l => keep ? (both(l, keep) ? .9 : .05) : (facetOn ? (both(l, facetBright) ? .7 : .08) : .6))
-    .attr('stroke', l => keep && both(l, keep) ? css('--acc') : css(l.guard ? '--guard' : '--edge'));
+  const impactCol = l => css(l.impact === 'blocked' ? '--blocked' : '--unvalidated');
+  root.selectAll('line').style('opacity', l => keep ? (both(l, keep) ? .9 : .05) : (facetOn ? (both(l, facetBright) ? .7 : .08) : (l.impact ? .9 : .6)))
+    .attr('stroke', l => l.impact ? impactCol(l) : (keep && both(l, keep) ? css('--acc') : css(l.guard ? '--guard' : '--edge')));
   updateLabels();
 }
 
@@ -686,7 +820,9 @@ function runSearch(fit) {
 
 const NEG = [['allLinks', 'onlyLinked'], ['paused', 'onlyActive'], ['allTags', 'onlyTags']];
 function syncHash() {  // keep the URL fragment in step with the toggles and the search text
-  const flags = ['onlyFail', 'hideAssets', 'hl', 'blast'].filter(id => box(id).checked);
+  const flags = ['impact', 'onlyFail', 'hideAssets', 'hl'].filter(id => box(id).checked);
+  if (!box('kindPipeline').checked) flags.push('noPipeline');
+  if (!box('kindTests').checked) flags.push('noTests');
   if (box('assetLabels').checked) flags.push('names');
   // These default to on, so the hash carries their negation (conn defaults to off).
   NEG.forEach(([flag, id]) => { if (!box(id).checked) flags.push(flag); });
@@ -702,8 +838,8 @@ function debounce(fn, ms) {
   return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
 }
 qEl.addEventListener('input', debounce(() => { runSearch(true); syncHash(); }, 150));
-['hideAssets', 'onlyFail', 'onlyLinked', 'onlyActive', 'onlyTags', 'conn'].forEach(id => box(id).addEventListener('change', () => { buildView(); if (!selectedId) renderSide(null); syncHash(); }));
-box('blast').addEventListener('change', () => { buildView(); if (!selectedId) renderSide(null); syncHash(); });
+['hideAssets', 'onlyFail', 'onlyLinked', 'onlyActive', 'onlyTags', 'conn', 'impact', 'kindPipeline', 'kindTests'].forEach(id =>
+  box(id).addEventListener('change', () => { buildView(); if (selectedId) renderSide(byId.get(selectedId)); else renderSide(null); syncHash(); }));
 box('hl').addEventListener('change', () => { applyHighlight(); syncHash(); });
 box('assetLabels').addEventListener('change', () => { updateLabels(); syncHash(); });
 box('fit').addEventListener('click', () => fitAll());
@@ -733,6 +869,8 @@ if (!isNaN(SNAP_AT)) {
 }
 box('filtersBtn').addEventListener('click', () => document.body.classList.toggle('filters-open'));
 if (!DATA.nodes.some(n => n.hl)) box('hlWrap').hidden = true;
+if (!DATA.nodes.some(failing)) box('kindWrap').hidden = true;
+const HL_LABEL = box('hlWrap').textContent.trim();
 box('lgHl').hidden = !DATA.nodes.some(n => n.hl);
 if (!DATA.nodes.some(n => n.kind === 'guard')) { box('guardWrap').hidden = true; box('lgGuard').hidden = true; }
 if (!DATA.nodes.some(n => n.inferred && n.kind !== 'guard')) box('lgInf').hidden = true;
@@ -741,9 +879,12 @@ if (TAGS.length) box('tagLbl').textContent = 'only tags: ' + TAGS.join(', ');
 else { box('tagWrap').hidden = true; box('connWrap').hidden = true; }
 if (META.airflow_version) { box('ver').textContent = 'Airflow ' + META.airflow_version; box('ver').hidden = false; }
 
-// Hash flags: #q=<text>,onlyFail,hideAssets,names,hl,allLinks,paused,allTags,conn,guards,hard,blast,v=<facet values>,sel=<node id> (any subset)
+// Hash flags: #q=<text>,impact,onlyFail,noPipeline,noTests,hideAssets,names,hl,allLinks,paused,allTags,conn,guards,hard,v=<facet values>,sel=<node id> (any subset)
 const hashState = decodeHash(location.hash), flags = hashState.flags;
-['hideAssets', 'onlyFail', 'hl', 'conn', 'blast'].forEach(id => { if (flags.includes(id)) box(id).checked = true; });
+['hideAssets', 'onlyFail', 'hl', 'conn', 'impact'].forEach(id => { if (flags.includes(id)) box(id).checked = true; });
+if (flags.includes('blast')) box('impact').checked = true;   // the flag of the blast radius it replaced
+if (flags.includes('noPipeline')) box('kindPipeline').checked = false;
+if (flags.includes('noTests')) box('kindTests').checked = false;
 if (flags.includes('names')) box('assetLabels').checked = true;
 if (flags.includes('guards') && !box('guardWrap').hidden) { box('showGuards').checked = true; refreshAdj(); }
 if (flags.includes('hard') && HAS_STRENGTH) { box('onlyHard').checked = true; refreshAdj(); }
@@ -752,7 +893,7 @@ if (FACET) hashState.v.forEach(v => { if (FACET.values.some(x => x.name === v)) 
 renderFacet();
 renderSide(null);
 buildView();
-if (facetSel.size) renderSide(null);  // the facet summary counts drawn nodes
+if (facetSel.size || IMPACT) renderSide(null);  // the facet summary and the impact cards count drawn nodes
 if (hashState.q !== null) {
   qEl.value = hashState.q;
   runSearch(false);

@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Mapping
 
+from . import outlets
 from . import snapshot as snapmod
 from .auth import resolve_password, resolve_user
 from .client import AirflowClient, ApiError
@@ -132,6 +133,32 @@ def _strength(client: AirflowClient, snap: Snapshot, s: Settings, log: Log) -> N
     snap.edges = annotate(snap.nodes, snap.edges, details)
 
 
+def _outlets(client: AirflowClient, snap: Snapshot, s: Settings, log: Log,
+             tasks_by_dag: dict[str, list[dict] | None] | None) -> None:
+    """Which assets and triggers each failed DAG produced in its failed run, from the task lists
+    (those already read for the sensors or --with-tasks, else one GET per failed DAG)."""
+    failed = outlets.failed_dag_ids(snap)
+    if not failed:
+        return
+    ids: dict[str, list[str] | None] = {}
+    for d in failed:
+        listed = (tasks_by_dag or {}).get(d)
+        if listed is not None:
+            ids[d] = [t["task_id"] for t in listed]
+        elif isinstance((snap.dags or {}).get(d, {}).get("tasks"), list):
+            ids[d] = list(snap.dags[d]["tasks"])
+    missing = [d for d in failed if d not in ids]
+    if missing:
+        log(f"reading the tasks of {len(missing)} failed DAGs")
+        for d, listed in fetch_tasks(client, missing, workers=s.workers).items():
+            ids[d] = None if listed is None else [t["task_id"] for t in listed]
+        unreadable = [d for d in missing if ids.get(d) is None]
+        if unreadable:
+            log(f"warning: task list unavailable for {len(unreadable)} failed DAGs; "
+                "their outlets are unknown")
+    outlets.annotate(snap, ids, s.tests_task_regex)
+
+
 def fetch_snapshot(client: AirflowClient, s: Settings, *, node_id: str | None = None,
                    log: Log = _quiet) -> Snapshot:
     """The graph plus, unless `node_id` narrows it to a subgraph, the DAG catalog, the inferred
@@ -144,6 +171,8 @@ def fetch_snapshot(client: AirflowClient, s: Settings, *, node_id: str | None = 
     if s.infer_sensors and not node_id:
         snap.inferred, tasks = _infer(client, snap, s, log)
     snap.dags = _fetch_dags(client, snap, s, log, tasks)
+    if s.with_status and not node_id:
+        _outlets(client, snap, s, log, tasks)
     return snap
 
 

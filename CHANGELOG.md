@@ -5,6 +5,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- *Impact of failures* on the page (hash flag `impact`): the failing DAGs in columns with what they **blocked** (orange) and what **ran on unvalidated data** (violet), hop by hop, the failures that affected nothing on a row under the graph, one side-panel card per failure with the affected DAGs and the link they came through, and the counts in the header. A failure blocks a consumer only when the outlet it waits on was not produced in the failed run and the consumer has not run since (hard edges, triggers and sensors; soft consumers run anyway); a tests-only failure whose outlets were produced marks the consumers that ran since as unvalidated.
+- Snapshot: `last_run.upstream_failed_tasks` (the task ids; `upstream_failed` stays the count) and `last_run.outlets`, which of the assets and triggers a failed DAG feeds were produced in its failed run (`outlets.py`: the producing task by naming convention from the task list, one `GET /dags/{id}/tasks` per failed DAG unless the list was already read). A tests-only failure that left an outlet unproduced is stored as `kind: pipeline`.
+- *pipeline failed* / *tests failed* switches (hash flags `noPipeline`, `noTests`) choose which failures count on the page: rings, the failing chain, the impact view.
+
+### Changed
+- The *blast radius* switch is replaced by *impact of failures*; a `blast` hash flag opens the new view.
+
 ## [0.8.0] - 2026-11-03
 
 ### Added

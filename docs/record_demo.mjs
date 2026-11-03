@@ -13,7 +13,7 @@
 //
 // The script drives the page over the Chrome DevTools protocol: it draws a cursor, presses Fit,
 // searches for "report", picks the Finance and Marketing chips, selects revenue_model, switches
-// blast radius on and ends on "failing and their chain". Needs node 22+ (built-in WebSocket and fetch).
+// impact of failures on and ends on "failing and their chain". Needs node 22+ (built-in WebSocket and fetch).
 import {writeFileSync, mkdirSync} from 'node:fs';
 
 const PORT = 9444, W = 1440, H = 860, PAGE = 'http://127.0.0.1:8765/demo.html';
@@ -96,8 +96,8 @@ await go(chip('Finance'), 600); await click(); await sleep(1400);
 await go(chip('Marketing'), 400); await click(); await sleep(1600);
 await go(chip(''), 400); await click(); await sleep(700);
 await go(node('dag:revenue_model'), 700); await click(); await sleep(1800);
-await go(sw('blast'), 700); await click(); await sleep(2200);
-await go(sw('blast'), 300); await click(); await sleep(300);
+await go(sw('impact'), 700); await click(); await sleep(2200);
+await go(sw('impact'), 300); await click(); await sleep(300);
 await go(sw('onlyFail'), 400); await click(); await sleep(2000);
 
 running = false; await frames;

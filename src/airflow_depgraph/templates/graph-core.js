@@ -7,6 +7,11 @@ function plural(n, one, many) { return `${n} ${n === 1 ? one : many}`; }
 // Non-DAG nodes are links: assets, triggers and sensors.
 function isLinkNode(node) { return node.type !== 'dag'; }
 function failing(n) { return !!(n.fail && !n.fail.paused); }
+// The kind of a failure for the page: ekind (set by impactKinds: a tests-only failure that blocks
+// data is a pipeline failure) over the snapshot's kind.
+function failKind(n) { return n.fail ? (n.fail.ekind || n.fail.kind || 'pipeline') : null; }
+// failing, and of a kind that is switched on (kinds = {tests: bool, pipeline: bool}, or null for all).
+function failingOf(n, kinds) { return failing(n) && (!kinds || kinds[failKind(n)] !== false); }
 function tagged(n, tags) { return (n.tags || []).some(t => tags.includes(t)); }
 // Unlinked DAGs, and DAGs linked only by deploy guards while guards are hidden.
 function looseNode(n, guardsOn) { return !!(n.unlinked || (n.guard_only && !guardsOn)); }
@@ -66,8 +71,9 @@ function neighbours(id, adj, nodesById) {
 
 // The filters: tag, active, connected, guards, hard edges only, blast radius and only failing.
 // data = {nodes, edges, byId, tags}; state = {onlyTags, onlyActive, conn, showGuards, onlyHard,
-// blast, onlyFail}. Returns the kept node ids and the edges between them.
+// blast, onlyFail, kinds}. Returns the kept node ids and the edges between them.
 function filterView(data, state) {
+  const failing = n => failingOf(n, state.kinds);
   const byId = data.byId, tags = data.tags || [];
   const onlyHard = !!state.onlyHard;
   const adj = buildAdj(data.edges, byId, {guards: state.showGuards, onlyHard});
@@ -110,6 +116,113 @@ function filterView(data, state) {
     keep = new Set([...keep].filter(id => lit.has(id)));
   }
   return {keep, edges: data.edges.filter(e => keep.has(e.s) && keep.has(e.t) && !(onlyHard && e.strength === 'soft'))};
+}
+
+// What the failing DAGs did to the rest: the DAGs they BLOCK and the DAGs that ran on UNVALIDATED data.
+//
+// A failed run blocks a consumer only when the outlet the consumer waits on was not produced:
+// fail.outlets[link id] is false (true: produced; missing or null: unknown, which counts as not
+// produced for a pipeline failure and as produced for a tests-only one; a sensor link on a
+// failed run never passes). Hard asset edges, triggers and sensors carry the block, a soft
+// consumer runs anyway; a blocked DAG produced nothing, so its hard consumers are blocked too.
+// A consumer that ran since the failure (ran >= fail.date) is not blocked whatever the outlets.
+// A tests-only failure whose outlets were produced marks the consumers that ran since as
+// unvalidated, through every edge and on through the DAGs that ran since. A failing DAG reached
+// this way is a consequence: still a root, with cause = the roots behind it.
+//
+// data = {nodes, edges, byId}; opts = {keep: Set of node ids the filters allow (null: all),
+// guards, kinds}. Returns roots, per node role ('root' | 'blocked' | 'unvalidated'), hop (column:
+// pure roots 0, links between columns at n - 0.5), the links to draw {s, t, kind}, cause, from (per
+// affected node: [{root, kind, via}]), per root {blocked, unvalidated: [{id, hop, via}]}, and ekind
+// (pipeline when the root blocks something).
+function impact(data, opts) {
+  const byId = data.byId, keep = opts.keep || null, kinds = opts.kinds || null;
+  const inKeep = id => !keep || keep.has(id);
+  const edges = data.edges.filter(e => inKeep(e.s) && inKeep(e.t));
+  const adj = buildAdj(edges, byId, {guards: opts.guards});
+  const strength = new Map(edges.map(e => [e.s + '|' + e.t, e.strength]));
+  const roots = data.nodes.filter(n => n.type === 'dag' && inKeep(n.id) && failingOf(n, kinds)).map(n => n.id);
+  const rootSet = new Set(roots);
+  const at = n => Date.parse(n.ran || '');
+  const ranSince = (id, since) => { const t = at(byId.get(id)); return !isNaN(t) && !isNaN(since) && t >= since; };
+  const produced = (root, link) => {
+    const o = root.fail.outlets ? root.fail.outlets[link] : undefined;
+    if (o === true || o === false) return o;
+    if (byId.get(link).type === 'sensor') return false;
+    return root.fail.kind === 'tests';
+  };
+  // Consumers of x: [{id, via (link id or null), soft}], through chains of link nodes.
+  const consumers = x => {
+    const out = [], stack = [[x, null]], seen = new Set();
+    while (stack.length) {
+      const [a, via] = stack.pop();
+      for (const b of adj.out.get(a) || []) {
+        if (byId.get(b).type === 'dag') out.push({id: b, via, soft: strength.get(a + '|' + b) === 'soft'});
+        else if (!seen.has(b)) { seen.add(b); stack.push([b, b]); }
+      }
+    }
+    return out;
+  };
+  const role = new Map(roots.map(id => [id, 'root'])), cause = new Map(), byRoot = new Map(), links = new Map(), from = new Map();
+  const addLink = (s, t, kind) => { const k = s + '|' + t; if (!links.has(k) || kind === 'blocked') links.set(k, {s, t, kind}); };
+  const walk = (rootId, kind) => {
+    const root = byId.get(rootId), since = at(root), hits = [];
+    const seen = new Set([rootId]);
+    let frontier = [rootId];
+    for (let hop = 1; frontier.length; hop++) {
+      const next = [];
+      for (const x of frontier) {
+        for (const c of consumers(x)) {
+          const outlet = c.via || c.id;
+          const ok = x === rootId ? (kind === 'blocked' ? !produced(root, outlet) : produced(root, outlet)) : true;
+          if (!ok || seen.has(c.id)) continue;
+          const ran = ranSince(c.id, since);
+          if (kind === 'blocked' && (c.soft || ran || rootSet.has(c.id))) continue;
+          if (kind === 'unvalidated' && !ran) continue;
+          seen.add(c.id); next.push(c.id);
+          hits.push({id: c.id, hop, via: c.via ? byId.get(c.via).label : null});
+          if (c.via) { addLink(x, c.via, kind); addLink(c.via, c.id, kind); } else addLink(x, c.id, kind);
+          if (!from.has(c.id)) from.set(c.id, []);
+          from.get(c.id).push({root: rootId, kind, via: c.via || null});
+          if (rootSet.has(c.id)) { if (!cause.has(c.id)) cause.set(c.id, []); cause.get(c.id).push(rootId); }
+          else if (role.get(c.id) !== 'blocked') role.set(c.id, kind);
+        }
+      }
+      frontier = next;
+    }
+    return hits;
+  };
+  for (const id of roots) {
+    const blocked = walk(id, 'blocked');
+    const unvalidated = byId.get(id).fail.kind === 'tests' ? walk(id, 'unvalidated') : [];
+    byRoot.set(id, {blocked, unvalidated});
+  }
+  const ekind = new Map(roots.map(id => [id, byRoot.get(id).blocked.length ? 'pipeline' : (byId.get(id).fail.kind || 'pipeline')]));
+  // Columns: a breadth-first walk over the drawn links from the roots nothing caused.
+  const hop = new Map(roots.filter(id => !cause.has(id)).map(id => [id, 0]));
+  const lout = new Map();
+  for (const l of links.values()) { if (!lout.has(l.s)) lout.set(l.s, []); lout.get(l.s).push(l.t); }
+  let frontier = [...hop.keys()];
+  for (let h = 1; frontier.length; h++) {
+    const next = [];
+    for (const x of frontier) for (const y of lout.get(x) || []) {
+      if (hop.has(y)) continue;
+      if (byId.get(y).type === 'dag') { hop.set(y, h); next.push(y); } else { hop.set(y, h - 0.5); frontier.push(y); }
+    }
+    frontier = next;
+  }
+  roots.forEach(id => { if (!hop.has(id)) hop.set(id, 0); });   // a cycle of failures: no pure root
+  return {roots, role, hop, links: [...links.values()], cause, from, byRoot, ekind,
+    blocked: [...role].filter(([, r]) => r === 'blocked').map(([id]) => id),
+    unvalidated: [...role].filter(([, r]) => r === 'unvalidated').map(([id]) => id)};
+}
+
+// Sets fail.ekind on every failing DAG node: pipeline when the failure blocks a DAG anywhere in the
+// snapshot, else the snapshot's kind. Done once at load, so rings, badges and the kind filter agree.
+function impactKinds(data) {
+  const im = impact(data, {keep: null, guards: true, kinds: null});
+  data.nodes.forEach(n => { if (n.fail) n.fail.ekind = im.ekind.get(n.id) || n.fail.kind || 'pipeline'; });
+  return im;
 }
 
 // Collapse dag -> link(s) -> dag into dag -> dag; via = the last link on the way. Returns the DAG ids
@@ -217,6 +330,6 @@ function parseQuery(raw, re) {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = {plural, failing, tagged, looseNode, isLinkNode, buildAdj, reach, chain, neighbours,
-    filterView, collapseLinks, encodeHash, decodeHash, parseQuery, facetOf, detectFacet};
+  module.exports = {plural, failing, failKind, failingOf, tagged, looseNode, isLinkNode, buildAdj, reach, chain, neighbours,
+    filterView, impact, impactKinds, collapseLinks, encodeHash, decodeHash, parseQuery, facetOf, detectFacet};
 }
