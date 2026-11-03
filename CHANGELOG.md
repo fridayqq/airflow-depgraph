@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-03
+
 ### Added
 - Hard/soft asset edges: `fetch`, `graph`, the plugin and the library read each consumer DAG's asset schedule (`GET /api/v2/dags/{id}/details`, parallel) and mark every asset -> DAG edge `strength: hard|soft` in the snapshot. Soft means the DAG runs without the asset: `Asset or <cron>`, an `any` condition, or an inlet-only read. The page draws soft edges dashed, counts them in the header, adds a *hard edges only* toggle (hash flag `hard`) and a legend entry. Preset key `edge_strength` (default true) switches the extra calls off.
 - With *linked DAGs only* off, the DAGs without any link are drawn on a shelf under the graph (a square grid of dots with a caption, outside the force layout) instead of only being listed in the side panel.
