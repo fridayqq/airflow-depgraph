@@ -82,3 +82,28 @@ def test_build_page_reuses_a_given_client(fake):
     client = FakeClient("http://af", token="t")
     html = build_page(Settings(url="http://af"), client=client)
     assert '"source": "http://af"' in html
+
+
+def test_status_is_read_for_tagged_catalog_dags_without_links(fake, monkeypatch):
+    """z has no link but carries the preset tag: it is on the page, so its status is read too.
+    Without tags only the graph's DAGs are read; the catalog could be the whole instance."""
+    seen = []
+
+    def fetch_status(client, ids, s, **kw):
+        seen.append(list(ids))
+        return {d: {"last_run": None} for d in ids}
+    monkeypatch.setattr(build, "fetch_status", fetch_status)
+    fetch_snapshot(FakeClient("http://af", token="t"), Settings(url="http://af", with_status=True,
+                                                                 tags=("team-a",)))
+    fetch_snapshot(FakeClient("http://af", token="t"), Settings(url="http://af", with_status=True))
+    assert seen == [["x", "y", "z"], ["x", "y"]]
+
+
+def test_status_dag_ids_skips_stale_and_untagged_catalog_dags():
+    from airflow_depgraph.snapshot import Snapshot, new
+    snap = new([{"id": "dag:x", "label": "x", "type": "dag"}], [], "http://af", "3.3.2")
+    assert isinstance(snap, Snapshot)
+    snap.catalog = {"x": {"tags": ["t"], "is_stale": False}, "gone": {"tags": ["t"], "is_stale": True},
+                    "other": {"tags": ["u"], "is_stale": False}, "lone": {"tags": ["t"], "is_stale": False}}
+    assert build.status_dag_ids(snap, Settings(tags=("t",))) == ["lone", "x"]
+    assert build.status_dag_ids(snap, Settings()) == ["x"]

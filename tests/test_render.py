@@ -257,3 +257,17 @@ def test_page_core_is_inlined_before_the_page_script(small_snapshot):
 def test_meta_carries_the_tag_facet(small_snapshot):
     assert '"tag_facet": "vertical:"' in render(small_snapshot, Settings(tag_facet="vertical:"))
     assert '"tag_facet": null' in render(small_snapshot, Settings())
+
+
+def test_view_ran_is_the_newer_of_the_decisive_and_the_running_run():
+    snap = Snapshot(format=1, fetched_at="t", source=None, airflow_version=None, nodes=[], edges=[],
+                    dags={"c": {"last_run": {"state": "failed", "kind": "pipeline",
+                                             "run_after": "2026-11-01T00:00:00Z",
+                                             "running": "2026-11-02T00:00:00Z"}},
+                          "a": {"last_run": {"state": "success", "run_after": "2026-11-03T00:00:00Z",
+                                             "running": None}}},
+                    catalog={d: {"tags": [], "is_paused": False, "is_stale": False} for d in "ac"})
+    nodes = _by_id(build_view(snap, Settings()))
+    assert nodes["dag:c"]["ran"] == "2026-11-02T00:00:00Z"
+    assert nodes["dag:c"]["fail"]["date"] == "2026-11-01T00:00:00Z"
+    assert nodes["dag:a"]["ran"] == "2026-11-03T00:00:00Z"

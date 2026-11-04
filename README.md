@@ -390,8 +390,10 @@ name = "example"
 # tests_task_regex = '(^|[._-])tests?([._-]|$)'
 # Regex used by --tasks-preset. Nothing is filtered at load time; all tasks are fetched.
 # task_query_regex = "^(extract|load)_"
-# How many recent runs to look at when computing the status.
+# At least this many newest runs are examined for the status, and every run of the last
+# status_lookback_days days: a failure buried under frequent runs that did nothing is still seen.
 # status_runs_lookback = 5
+# status_lookback_days = 7
 # Default page filter: only DAGs with any of these tags (the page can switch it off).
 # tags = ["team-a"]
 ```
@@ -513,9 +515,11 @@ Status needs `--with-status` (or `with_status = true`). For each DAG:
 
 ![Decision flow: newest runs first, skip running/queued and empty successes, the first decisive run wins; failed runs are "tests only" when every failed task matches tests_task_regex](docs/images/status-rule.png)
 
-- Runs are examined newest first, up to `status_runs_lookback`.
+- The window is every run of the last `status_lookback_days` days (7), and at least the newest `status_runs_lookback` runs (5) whatever their age. A time window, because an asset-triggered DAG can run many times a day and end green each time without doing anything; a count would soon be filled by such runs and the failure before them lost. A DAG that has not run for weeks still gets its newest runs.
 - Runs that are still running or queued are skipped. So are successful runs in which every task was skipped.
-- The first remaining run is the decisive one. If it failed, the DAG is failing. If it succeeded, the DAG is healthy, unless an older run in the lookback failed and none of the successful runs since ran the tasks that failed there: a run that took a freshness gate's skip path ends green with the failed work still undone, so the DAG stays failing (the failed run is reported) until a run redoes that work or the failed run leaves the lookback.
+- The first remaining run is the decisive one. If it failed, the DAG is failing. If it succeeded, the DAG is healthy, unless an older run in the window failed and none of the successful runs since ran the tasks that failed there: a run that took a freshness gate's skip path ends green with the failed work still undone, so the DAG stays failing (the failed run is reported) until a run redoes that work or the failed run leaves the window.
+- `last_run.running` is when a run newer than the decisive one that is still running started, if any; the page takes it as when the DAG last ran, so a DAG re-running after a failure, or running on data whose tests just failed, is shown as such.
+- Status is read for the DAGs of the graph and, when the preset has `tags`, for every active catalog DAG with one of them: a DAG with no cross-DAG link is on the page too, and a failure there matters as much. Without `tags` the catalog can be the whole instance, and only the graph is read.
 - A failing DAG is of kind `tests` when every task in state `failed` matches `tests_task_regex`. Otherwise it is a pipeline failure. The regex is configurable because a pipeline task named like `load_test_data` would otherwise count as a test.
 - Tasks in state `upstream_failed` do not count, because they only inherit a failure.
 

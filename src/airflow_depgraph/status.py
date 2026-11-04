@@ -7,13 +7,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 
-from .client import NONEMPTY_TI_STATES, AirflowClient, ApiError
+from .client import BULK_PAGE, NONEMPTY_TI_STATES, AirflowClient, ApiError
 from .presets import Settings
 
 _EMPTY_STATES = {"skipped", "removed", None}
-# Run listings are tried over these windows in turn; the short one is cheap, and only DAGs with too
-# few runs in it are listed over the long one. Busy DAGs flood a long listing otherwise.
-BULK_WINDOWS_DAYS = (3, 14)
 _FAILED_STATES = ("failed", "upstream_failed")
 
 
@@ -29,6 +26,9 @@ class LastRun:
     # {link node id: True (produced), False (not produced), None (unknown)} for the assets and
     # triggers the DAG feeds, filled by outlets.annotate for failed runs.
     outlets: dict[str, bool | None] | None = None
+    # When a run newer than the decisive one that is still running started, if any: the DAG is
+    # running again after that failure or success.
+    running: str | None = None
 
 
 def _failed_run(run_id: str, run_after: str | None, instances: list[dict],
@@ -41,8 +41,20 @@ def _failed_run(run_id: str, run_after: str | None, instances: list[dict],
                    run_after, run_id, failed, len(upstream), upstream)
 
 
-def _success(run: dict) -> LastRun:
-    return LastRun("success", None, run.get("run_after"), run["dag_run_id"], [], 0)
+def _success(run: dict, running: str | None = None) -> LastRun:
+    return LastRun("success", None, run.get("run_after"), run["dag_run_id"], [], 0,
+                   running=running)
+
+
+def _running_before(runs: list[dict], index: int | None) -> str | None:
+    """When the newest run still running among the runs newer than `runs[index]` started."""
+    return next((r.get("run_after") for r in runs[:index] if r.get("state") == "running"), None)
+
+
+def window_start(s: Settings, now: datetime | None = None) -> str:
+    """The start of the status window, ISO 8601 UTC."""
+    return ((now or datetime.now(timezone.utc)) - timedelta(days=s.status_lookback_days)
+            ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def _redone(failed_tasks: list[str], ran: set[str]) -> bool:
@@ -59,25 +71,36 @@ def classify_runs(runs: list[dict], task_instances: Callable[[str], list[dict]],
 
     A success in which some task ran is decisive, unless an older run of the window failed and
     none of the successes since redid the tasks that failed there: then the DAG is still failing
-    and the failed run is the answer."""
-    fixes: list[tuple[dict, list[dict]]] = []   # non-empty successes newer than the first failure
-    for run in runs:
-        state = run.get("state")
-        run_id = run["dag_run_id"]
-        if state == "success":
-            instances = task_instances(run_id)
-            if all(ti.get("state") in _EMPTY_STATES for ti in instances):
-                continue  # empty success: nothing really ran
-            fixes.append((run, instances))
-        elif state == "failed":
-            last = _failed_run(run_id, run.get("run_after"), task_instances(run_id),
-                               tests_task_regex)
-            if not fixes:
-                return last
-            ran = {ti["task_id"] for _, inst in fixes for ti in inst
-                   if ti.get("state") not in _EMPTY_STATES}
-            return _success(fixes[0][0]) if _redone(last.failed_tasks, ran) else last
-    return _success(fixes[0][0]) if fixes else None
+    and the failed run is the answer. Task instances are read for the newest failed run and for
+    the successes newer than it, newest first, stopping once the failed tasks are seen again."""
+    failed_at = next((i for i, r in enumerate(runs) if r.get("state") == "failed"), None)
+    last: LastRun | None = None
+    if failed_at is not None:
+        run = runs[failed_at]
+        last = _failed_run(run["dag_run_id"], run.get("run_after"),
+                           task_instances(run["dag_run_id"]), tests_task_regex)
+        last.running = _running_before(runs, failed_at)
+    first: tuple[int, dict] | None = None   # the newest success in which some task ran
+    ran: set[str] = set()
+    for i, run in enumerate(runs[:failed_at]):
+        if run.get("state") != "success":
+            continue
+        did = {ti["task_id"] for ti in task_instances(run["dag_run_id"])
+               if ti.get("state") not in _EMPTY_STATES}
+        if not did:
+            continue  # empty success: nothing really ran
+        first = first or (i, run)
+        if last is None:
+            break
+        ran |= did
+        if _redone(last.failed_tasks, ran):
+            last = None
+            break
+    if last is not None:
+        return last
+    if first is None:
+        return None
+    return _success(first[1], _running_before(runs, first[0]))
 
 
 def _facts(client: AirflowClient, dag_id: str, catalog: dict[str, dict] | None) -> dict:
@@ -102,7 +125,7 @@ def _summary(facts: dict, last: LastRun | None) -> dict:
 def _one(client: AirflowClient, dag_id: str, s: Settings, with_tasks: bool,
          catalog: dict[str, dict] | None = None) -> dict:
     d = _facts(client, dag_id, catalog)
-    runs = client.dag_runs(dag_id, s.status_runs_lookback)
+    runs = client.dag_runs_since(dag_id, window_start(s), s.status_runs_lookback)
     last = classify_runs(runs, lambda rid: client.task_instances(dag_id, rid),
                          s.tests_task_regex)
     out = _summary(d, last)
@@ -140,11 +163,11 @@ def _per_dag(client: AirflowClient, dag_ids: list[str], s: Settings, *, with_tas
     return result
 
 
-def _runs_by_dag(dag_ids: list[str], runs: list[dict], lookback: int) -> dict[str, list[dict]]:
+def _runs_by_dag(dag_ids: list[str], runs: list[dict]) -> dict[str, list[dict]]:
     grouped: dict[str, list[dict]] = {d: [] for d in dag_ids}
     for run in sorted(runs, key=lambda r: r.get("run_after") or "", reverse=True):
         bucket = grouped.get(run.get("dag_id"))
-        if bucket is not None and len(bucket) < lookback:
+        if bucket is not None:
             bucket.append(run)
     return grouped
 
@@ -180,6 +203,7 @@ def _decide_bulk(client: AirflowClient, runs: dict[str, list[dict]], tests_task_
                     decided[d] = _failed_run(run["dag_run_id"], run.get("run_after"),
                                              by_run.get((d, run["dag_run_id"]), []),
                                              tests_task_regex)
+                    decided[d].running = _running_before(runs[d], cursor[d])
                     pending.discard(d)
             recovering: dict[str, tuple[dict, dict, list[dict]]] = {}
             if succeeded:
@@ -196,60 +220,86 @@ def _decide_bulk(client: AirflowClient, runs: dict[str, list[dict]], tests_task_
                     j = next((k for k in range(i + 1, len(rs)) if rs[k].get("state") == "failed"),
                              None)
                     if j is None:
-                        decided[d] = _success(run)
+                        decided[d] = _success(run, _running_before(rs, i))
                         pending.discard(d)
                     else:   # a failure in the window: fixed only if its tasks ran since
                         recovering[d] = (run, rs[j], [r for r in rs[i:j]
                                                       if r.get("state") == "success"])
             if recovering:
-                dags = list(recovering)
-                failed_tis: dict[tuple, list[dict]] = {}
-                for ti in client.bulk_task_instances(
-                        dags, [f["dag_run_id"] for _, f, _ in recovering.values()],
-                        _FAILED_STATES):
-                    failed_tis.setdefault((ti.get("dag_id"), ti.get("dag_run_id")), []).append(ti)
-                ran: dict[tuple, set[str]] = {}
-                for ti in client.bulk_task_instances(
-                        dags, [r["dag_run_id"] for _, _, since in recovering.values()
-                               for r in since], NONEMPTY_TI_STATES):
-                    ran.setdefault((ti.get("dag_id"), ti.get("dag_run_id")), set()).add(ti["task_id"])
-                for d, (run, failed_run, since) in recovering.items():
-                    last = _failed_run(failed_run["dag_run_id"], failed_run.get("run_after"),
-                                       failed_tis.get((d, failed_run["dag_run_id"]), []),
-                                       tests_task_regex)
-                    ran_since = set().union(*(ran.get((d, r["dag_run_id"]), set()) for r in since))
-                    decided[d] = _success(run) if _redone(last.failed_tasks, ran_since) else last
+                for d, last in _recovered(client, recovering, tests_task_regex).items():
+                    run, failed_run, _ = recovering[d]
+                    rs = runs[d]
+                    if last is None:
+                        decided[d] = _success(run, _running_before(rs, rs.index(run)))
+                    else:
+                        last.running = _running_before(rs, rs.index(failed_run))
+                        decided[d] = last
                     pending.discard(d)
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
     return decided
 
 
+def _recovered(client: AirflowClient, recovering: dict[str, tuple[dict, dict, list[dict]]],
+               tests_task_regex: str) -> dict[str, LastRun | None]:
+    """For each DAG with a success newer than a failed run: None when the successes since redid
+    the tasks that failed, else the failed run. One call reads the failed runs' task instances;
+    the successes are then asked for those task ids newest first, a page of run ids at a time
+    shared by the DAGs still undecided, so a DAG fixed by its newest success costs one call
+    while a long trail of skip-path successes is walked to its end."""
+    dags = list(recovering)
+    failed_tis: dict[tuple, list[dict]] = {}
+    for ti in client.bulk_task_instances(
+            dags, [f["dag_run_id"] for _, f, _ in recovering.values()], _FAILED_STATES):
+        failed_tis.setdefault((ti.get("dag_id"), ti.get("dag_run_id")), []).append(ti)
+    out: dict[str, LastRun | None] = {}
+    last: dict[str, LastRun] = {}
+    for d, (_, failed_run, _) in recovering.items():
+        last[d] = _failed_run(failed_run["dag_run_id"], failed_run.get("run_after"),
+                              failed_tis.get((d, failed_run["dag_run_id"]), []), tests_task_regex)
+    pos = {d: 0 for d in dags}
+    ran: dict[str, set[str]] = {d: set() for d in dags}
+    open_ = [d for d in dags if recovering[d][2]]
+    out.update({d: last[d] for d in dags if not recovering[d][2]})
+    while open_:
+        per = max(1, BULK_PAGE // len(open_))
+        page = {d: [r["dag_run_id"] for r in recovering[d][2][pos[d]:pos[d] + per]] for d in open_}
+        wanted = sorted({t for d in open_ for t in last[d].failed_tasks})
+        # The listing filters by DAG ids and run ids separately, not by pairs: scheduled DAGs
+        # share run ids, so another DAG's success run id can bring back this DAG's failed run.
+        for ti in client.bulk_task_instances(
+                open_, [r for ids in page.values() for r in ids], NONEMPTY_TI_STATES, wanted):
+            if ti.get("dag_run_id") in page.get(ti.get("dag_id"), ()):
+                ran[ti["dag_id"]].add(ti["task_id"])
+        for d in list(open_):
+            pos[d] += len(page[d])
+            if _redone(last[d].failed_tasks, ran[d]):
+                out[d] = None
+            elif pos[d] >= len(recovering[d][2]):
+                out[d] = last[d]
+            else:
+                continue
+            open_.remove(d)
+    return out
+
+
 def _bulk_outcomes(client: AirflowClient, dag_ids: list[str], s: Settings,
                    workers: int) -> tuple[dict[str, LastRun | None], list[str]]:
     """Answers reached in bulk, and the DAGs that still need a per-DAG read.
 
-    A DAG is settled when a decisive run is among its newest runs of a window, or when a window
-    lists `status_runs_lookback` runs of it and none is decisive. The windows are prefixes of the
-    same newest-first history, so the first decisive run found is the one the per-DAG path finds."""
-    lookback = s.status_runs_lookback
+    One listing of every run of the window. A DAG with at least `status_runs_lookback` runs in
+    it is settled by it, decisive run or not: the per-DAG path would read the same runs. A DAG
+    with fewer runs in the window may have older ones that count, and is read per DAG."""
+    runs = _runs_by_dag(dag_ids, client.bulk_dag_runs(dag_ids, window_start(s)))
+    decided = _decide_bulk(client, {d: rs for d, rs in runs.items() if rs},
+                           s.tests_task_regex, workers)
     final: dict[str, LastRun | None] = {}
-    pending = list(dag_ids)
-    for days in BULK_WINDOWS_DAYS:
-        if not pending:
-            break
-        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-        runs = _runs_by_dag(pending, client.bulk_dag_runs(pending, since, per_dag=lookback),
-                            lookback)
-        decided = _decide_bulk(client, {d: rs for d, rs in runs.items() if rs},
-                               s.tests_task_regex, workers)
-        for d in pending:
-            if d in decided:
-                final[d] = decided[d]
-            elif len(runs[d]) == lookback:
-                final[d] = None
-        pending = [d for d in pending if d not in final]
-    return final, pending
+    for d in dag_ids:
+        if d in decided:
+            final[d] = decided[d]
+        elif len(runs[d]) >= s.status_runs_lookback:
+            final[d] = None
+    return final, [d for d in dag_ids if d not in final]
 
 
 def fetch_status_bulk(client: AirflowClient, dag_ids: list[str], s: Settings, *,

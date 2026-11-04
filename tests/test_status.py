@@ -2,6 +2,7 @@ from collections import Counter
 
 import pytest
 
+from airflow_depgraph import status as status_mod
 from airflow_depgraph.client import NONEMPTY_TI_STATES, ApiError
 from airflow_depgraph.presets import Settings
 from airflow_depgraph.status import classify_runs, fetch_status
@@ -83,7 +84,7 @@ def test_gate_skip_success_does_not_fix_the_failure():
               "r1": {"check_asset_freshness": "success", "dbt_run": "success",
                      "dbt_test": "failed", "skip_execution": "skipped"}})
     res = classify_runs(runs, ti, RX)
-    assert ti.calls == ["r2", "r1"]
+    assert sorted(ti.calls) == ["r1", "r2"]
     assert (res.state, res.kind, res.run_id, res.run_after) == ("failed", "tests", "r1",
                                                                 "2026-01-01T00:00:00Z")
 
@@ -125,11 +126,56 @@ def test_only_skipped_successes_is_none():
     assert classify_runs([{"dag_run_id": "r1", "state": "success"}], ti, RX) is None
 
 
+def _gate_skip(run_id, when, state="success"):
+    return {"dag_run_id": run_id, "state": state, "run_after": when}
+
+
+def test_failure_buried_under_many_gate_skips_is_still_found():
+    # Thirty green runs that took the skip path, then the failed one: the failure stands, and the
+    # task instances of every success since are read until the failed task is seen again.
+    runs = [_gate_skip(f"s{i}", f"2026-01-{31 - i:02d}T00:00:00Z") for i in range(30)]
+    runs.append(_gate_skip("f", "2026-01-01T00:00:00Z", "failed"))
+    tis = {f"s{i}": {"gate": "success", "refresh": "skipped", "skip": "success"} for i in range(30)}
+    tis["f"] = {"gate": "success", "refresh": "failed"}
+    ti = _ti(tis)
+    res = classify_runs(runs, ti, RX)
+    assert res.state == "failed" and res.run_id == "f" and res.running is None
+    assert len(ti.calls) == 31
+
+
+def test_reading_stops_once_the_failed_tasks_ran_again():
+    runs = [_gate_skip("s3", "2026-01-04T00:00:00Z"), _gate_skip("s2", "2026-01-03T00:00:00Z"),
+            _gate_skip("s1", "2026-01-02T00:00:00Z"), _gate_skip("f", "2026-01-01T00:00:00Z", "failed")]
+    ti = _ti({"s3": {"gate": "success", "load": "skipped"}, "s2": {"gate": "success", "load": "success"},
+              "s1": {"gate": "success", "load": "success"}, "f": {"load": "failed"}})
+    res = classify_runs(runs, ti, RX)
+    assert res.state == "success" and res.run_id == "s3"      # the newest real success
+    assert sorted(ti.calls) == ["f", "s2", "s3"]               # s1 never needed
+
+
+def test_running_run_newer_than_the_failure_is_reported():
+    runs = [{"dag_run_id": "r3", "state": "running", "run_after": "2026-01-03T00:00:00Z"},
+            {"dag_run_id": "r2", "state": "queued", "run_after": "2026-01-02T12:00:00Z"},
+            {"dag_run_id": "r1", "state": "failed", "run_after": "2026-01-01T00:00:00Z"}]
+    res = classify_runs(runs, _ti({"r1": {"load": "failed"}}), RX)
+    assert res.state == "failed" and res.running == "2026-01-03T00:00:00Z"
+
+
+def test_running_run_newer_than_the_success_is_reported_and_older_ones_are_not():
+    runs = [{"dag_run_id": "r3", "state": "running", "run_after": "2026-01-03T00:00:00Z"},
+            {"dag_run_id": "r2", "state": "success", "run_after": "2026-01-02T00:00:00Z"},
+            {"dag_run_id": "r1", "state": "running", "run_after": "2026-01-01T00:00:00Z"}]
+    res = classify_runs(runs, _ti({"r2": {"load": "success"}}), RX)
+    assert res.state == "success" and res.running == "2026-01-03T00:00:00Z"
+    res = classify_runs(runs[1:], _ti({"r2": {"load": "success"}}), RX)
+    assert res.running is None
+
+
 class FakeClient:
     def bulk_dag_runs(self, dag_ids, since_iso, per_dag=None):   # an older Airflow
         raise ApiError("404 on dagRuns/list", 404, "/dagRuns/list")
 
-    def bulk_task_instances(self, dag_ids, run_ids, states):
+    def bulk_task_instances(self, dag_ids, run_ids, states, task_ids=None):
         raise ApiError("404 on taskInstances/list", 404, "/taskInstances/list")
 
     def dag(self, dag_id):
@@ -138,7 +184,7 @@ class FakeClient:
         return {"is_paused": dag_id == "dag_b", "timetable_summary": None,
                 "timetable_description": "Daily", "owners": ["me"]}
 
-    def dag_runs(self, dag_id, limit):
+    def dag_runs_since(self, dag_id, since_iso, min_runs):
         return [{"dag_run_id": "r1", "state": "success", "run_after": "t"}]
 
     def task_instances(self, dag_id, run_id):
@@ -186,10 +232,10 @@ def test_fetch_status_reuses_catalog():
 
 
 class _ExpiredToken(FakeClient):
-    def dag_runs(self, dag_id, limit):
+    def dag_runs_since(self, dag_id, since_iso, min_runs):
         if dag_id == "dag_401":
             raise ApiError("401 on /dagRuns: Unauthorized", 401, "/dagRuns")
-        return super().dag_runs(dag_id, limit)
+        return super().dag_runs_since(dag_id, since_iso, min_runs)
 
 
 def test_fetch_status_stops_on_401():
@@ -224,9 +270,10 @@ class BulkFake:
         self.calls["dag"] += 1
         return {"is_paused": False, "timetable_summary": "Daily", "owners": ["me"]}
 
-    def dag_runs(self, dag_id, limit):
+    def dag_runs_since(self, dag_id, since_iso, min_runs):
+        # The window is ignored, as bulk_dag_runs ignores it: the same runs on both paths.
         self.calls["dag_runs"] += 1
-        return self.runs.get(dag_id, [])[:limit]
+        return self.runs.get(dag_id, [])
 
     def task_instances(self, dag_id, run_id, state=None):
         self.calls["task_instances"] += 1
@@ -243,12 +290,13 @@ class BulkFake:
         self.calls["bulk_runs"] += 1
         return [r for d in dag_ids for r in self.runs.get(d, [])]
 
-    def bulk_task_instances(self, dag_ids, run_ids, states):
+    def bulk_task_instances(self, dag_ids, run_ids, states, task_ids=None):
         if self.bulk_status:
             raise ApiError("no bulk", self.bulk_status, "/taskInstances/list")
         self.calls["bulk_tis"] += 1
         return [dict(ti, dag_id=d, dag_run_id=r) for (d, r), items in self.tis.items()
-                if d in dag_ids and r in run_ids for ti in items if ti["state"] in states]
+                if d in dag_ids and r in run_ids for ti in items
+                if ti["state"] in states and (task_ids is None or ti["task_id"] in task_ids)]
 
 
 def _run(dag, run_id, state, run_after="2026-10-20T00:00:00+00:00"):
@@ -268,6 +316,11 @@ def _cases():
         "d_gate": [_run("d_gate", "g2", "success"), _run("d_gate", "g1", "failed")],
         "d_fixed": [_run("d_fixed", "f3", "success"), _run("d_fixed", "f2", "success"),
                     _run("d_fixed", "f1", "failed")],
+        # More skip-path successes than the run lookback, then the failure: the window is by time.
+        "d_buried": [_run("d_buried", f"b{i}", "success", f"2026-10-{30 - i:02d}T00:00:00+00:00")
+                     for i in range(6)] + [_run("d_buried", "b_f", "failed", "2026-10-01T00:00:00+00:00")],
+        "d_rerun": [_run("d_rerun", "u2", "running", "2026-10-21T00:00:00+00:00"),
+                    _run("d_rerun", "u1", "failed")],
     }
     tis = {
         ("d_success", "s2"): [{"task_id": "a", "state": "success"}, {"task_id": "b", "state": "skipped"}],
@@ -287,6 +340,10 @@ def _cases():
         ("d_fixed", "f3"): [{"task_id": "gate", "state": "success"}, {"task_id": "load", "state": "skipped"}],
         ("d_fixed", "f2"): [{"task_id": "gate", "state": "success"}, {"task_id": "load", "state": "success"}],
         ("d_fixed", "f1"): [{"task_id": "gate", "state": "success"}, {"task_id": "load", "state": "failed"}],
+        **{("d_buried", f"b{i}"): [{"task_id": "gate", "state": "success"},
+                                   {"task_id": "refresh", "state": "skipped"}] for i in range(6)},
+        ("d_buried", "b_f"): [{"task_id": "refresh", "state": "failed"}],
+        ("d_rerun", "u1"): [{"task_id": "load", "state": "failed"}],
     }
     return runs, tis
 
@@ -317,6 +374,10 @@ def test_bulk_matches_per_dag_path_case_by_case():
     assert bulk["d_pipe"]["last_run"]["kind"] == "pipeline"
     assert bulk["d_running"]["last_run"] is None and bulk["d_skipped"]["last_run"] is None
     assert bulk["d_nodata"]["last_run"] is None
+    assert bulk["d_buried"]["last_run"]["run_id"] == "b_f"
+    assert bulk["d_pipe"]["last_run"]["running"] == "2026-10-20T00:00:00+00:00"
+    assert bulk["d_rerun"]["last_run"]["running"] == "2026-10-21T00:00:00+00:00"
+    assert bulk["d_success"]["last_run"]["running"] is None
     # A green run that skipped the failed work is not a fix; one that redid it is.
     assert bulk["d_gate"]["last_run"]["run_id"] == "g1" and bulk["d_gate"]["last_run"]["kind"] == "tests"
     assert bulk["d_fixed"]["last_run"]["run_id"] == "f3"
@@ -443,3 +504,75 @@ def test_success_run_with_only_skipped_tasks_stays_undecided_as_per_dag():
            ("d_skip", "k1"): [{"task_id": "a", "state": "removed"}, {"task_id": "b", "state": None}]}
     bulk = _compare_bulk_with_per_dag(runs, tis, lookback=2)
     assert bulk["d_skip"]["last_run"] is None
+
+
+def test_bulk_settles_a_dag_by_the_window_and_reads_the_rest_per_dag():
+    """A DAG with at least status_runs_lookback runs in the window is settled by the listing even
+    without a decisive run; one with fewer runs in it is read per DAG, where older runs count."""
+    from datetime import datetime, timedelta, timezone
+    day = lambda n: (datetime.now(timezone.utc) - timedelta(days=n)).isoformat()  # noqa: E731
+    runs = {"busy": [_run("busy", f"q{i}", "running", day(i + 1)) for i in range(3)],
+            "quiet": [_run("quiet", "old", "failed", day(300))]}
+    tis = {("quiet", "old"): [{"task_id": "a", "state": "failed"}]}
+
+    class Windowed(BulkFake):
+        def bulk_dag_runs(self, dag_ids, since_iso, per_dag=None):
+            self.calls["bulk_runs"] += 1
+            self.since = since_iso
+            return [r for d in dag_ids for r in self.runs.get(d, []) if r["run_after"] >= since_iso]
+
+        def dag_runs_since(self, dag_id, since_iso, min_runs):
+            self.calls["dag_runs"] += 1
+            rs = self.runs.get(dag_id, [])
+            return [r for i, r in enumerate(rs) if i < min_runs or r["run_after"] >= since_iso]
+
+    fake = Windowed(runs, tis)
+    s = Settings(status_runs_lookback=3, status_lookback_days=7)
+    out = fetch_status(fake, ["busy", "quiet"], s, with_tasks=False, catalog=_catalog(runs))
+    assert fake.since.endswith("Z") and fake.since[:10] == day(7)[:10]
+    assert out["busy"]["last_run"] is None and fake.calls["dag_runs"] == 1
+    assert out["quiet"]["last_run"]["state"] == "failed"
+
+
+def test_window_start_is_days_before_now():
+    from datetime import datetime, timezone
+
+    from airflow_depgraph import status
+    now = datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc)
+    assert status.window_start(Settings(status_lookback_days=7), now) == "2026-10-22T12:00:00.000000Z"
+
+
+def test_bulk_walks_the_successes_since_a_failure_newest_first_and_stops_early():
+    """A DAG fixed by its newest success costs one task-instance page however long its history;
+    a trail of skip-path successes is read page by page to the failed run."""
+    def trail(dag, n, fixed_at=None):
+        rs = [_run(dag, f"s{i}", "success", f"2026-10-{30 - i // 24:02d}T{23 - i % 24:02d}:00:00+00:00")
+              for i in range(n)]
+        rs.append(_run(dag, "f", "failed", "2026-10-01T00:00:00+00:00"))
+        tis = {(dag, f"s{i}"): [{"task_id": "gate", "state": "success"},
+                                {"task_id": "load", "state": "success" if i == fixed_at else "skipped"}]
+               for i in range(n)}
+        tis[(dag, "f")] = [{"task_id": "load", "state": "failed"}]
+        return rs, tis
+    runs, tis = {}, {}
+    for dag, n, fixed in (("quick", 250, 0), ("slow", 250, None), ("mid", 250, 120)):
+        rs, t = trail(dag, n, fixed)
+        runs[dag] = rs
+        tis.update(t)
+    # Scheduled DAGs share run ids: twin's failed run has the id of the others' newest success,
+    # and the batch listing filters DAG ids and run ids separately. Its failure must stand.
+    runs["twin"] = [_run("twin", "t1", "success", "2026-10-30T00:00:00+00:00"),
+                    _run("twin", "s0", "failed", "2026-10-29T00:00:00+00:00")]
+    tis[("twin", "t1")] = [{"task_id": "gate", "state": "success"}, {"task_id": "load", "state": "skipped"}]
+    tis[("twin", "s0")] = [{"task_id": "load", "state": "failed"}]
+    fake = BulkFake(runs, tis)
+    out = fetch_status(fake, list(runs), Settings(), with_tasks=False, catalog=_catalog(runs))
+    assert out["quick"]["last_run"]["run_id"] == "s0"
+    assert out["mid"]["last_run"]["run_id"] == "s0"            # the newest real success is reported
+    assert out["slow"]["last_run"]["run_id"] == "f"
+    assert out["twin"]["last_run"]["run_id"] == "s0" and out["twin"]["last_run"]["state"] == "failed"
+    # One call for the failed runs, then pages of 100 run ids shared by the undecided DAGs:
+    # 25 each (quick and twin decided), 50 each (mid decided at its 120th), then 100 for slow.
+    assert fake.calls["bulk_tis"] == 1 + 1 + 2 + 2
+    per = {d: status_mod._one(BulkFake(runs, tis), d, Settings(), False, _catalog(runs)) for d in runs}
+    assert out == per

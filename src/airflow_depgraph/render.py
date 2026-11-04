@@ -56,8 +56,10 @@ def build_view(snap: Snapshot, s: Settings, status_override: dict | None = None)
         node["tags"] = list((cat or {}).get("tags") or [])
         node["schedule"] = (cat or {}).get("schedule") or info.get("schedule")
         run = info.get("last_run") or {}
-        if run.get("run_after"):
-            node["ran"] = run["run_after"]         # when the last decisive run started
+        # When the DAG last ran: the decisive run, or a newer run that is still running.
+        ran = max((t for t in (run.get("run_after"), run.get("running")) if t), default=None)
+        if ran:
+            node["ran"] = ran
         if dag_id in override:
             node["fail"] = dict(override[dag_id])
         elif run.get("state") == "failed":

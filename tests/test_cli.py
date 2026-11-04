@@ -38,7 +38,7 @@ class FakeClient:
     def bulk_dag_runs(self, dag_ids, since_iso, per_dag=None):   # an older Airflow
         raise ApiError("404 on dagRuns/list", 404, "/dagRuns/list")
 
-    def bulk_task_instances(self, dag_ids, run_ids, states):
+    def bulk_task_instances(self, dag_ids, run_ids, states, task_ids=None):
         raise ApiError("404 on taskInstances/list", 404, "/taskInstances/list")
 
     @classmethod
@@ -74,6 +74,9 @@ class FakeClient:
         return [{"task_id": "refresh_dashboard"}, {"task_id": "other"}]
 
     def dag_runs(self, dag_id, limit):
+        return []
+
+    def dag_runs_since(self, dag_id, since_iso, min_runs):
         return []
 
     def task_instances(self, dag_id, run_id):
@@ -444,12 +447,12 @@ def test_live_query_infers_when_setting_is_on(live, monkeypatch, capsys):
 def test_fetch_warns_on_stderr_when_status_unavailable(tmp_path, live, monkeypatch, capsys):
     from airflow_depgraph.client import ApiError
 
-    def dag_runs(self, dag_id, limit):
+    def dag_runs_since(self, dag_id, since_iso, min_runs):
         if dag_id == "y":
             raise ApiError("500 on /dagRuns", 500, "/dagRuns")
         return []
 
-    monkeypatch.setattr(FakeClient, "dag_runs", dag_runs)
+    monkeypatch.setattr(FakeClient, "dag_runs_since", dag_runs_since)
     assert cli.main(["fetch", "--url", URL, "-o", str(tmp_path / "s.json"), "--with-status"]) == 0
     captured = capsys.readouterr()
     assert "warning: status unavailable for 1 of 2 DAGs (first error: 500 on /dagRuns)" in captured.err
@@ -620,7 +623,7 @@ def test_json_state_is_normalised_to_success_failed_or_null():
 
 def test_live_downstream_shows_status_of_hit_dags(live, monkeypatch, capsys):
     class RunsClient(FakeClient):
-        def dag_runs(self, dag_id, limit):
+        def dag_runs_since(self, dag_id, since_iso, min_runs):
             if dag_id == "y":
                 return [{"dag_run_id": "r1", "state": "failed", "run_after": "2026-10-22T05:00:00Z"}]
             return []
@@ -691,7 +694,7 @@ def test_live_downstream_queries_status_only_for_hit_dags(live, monkeypatch, cap
     calls = []
 
     class CountingClient(FakeClient):
-        def dag_runs(self, dag_id, limit):
+        def dag_runs_since(self, dag_id, since_iso, min_runs):
             calls.append(dag_id)
             return []
 
@@ -704,7 +707,7 @@ def test_live_upstream_queries_status_only_for_hit_dags(live, monkeypatch, capsy
     calls = []
 
     class CountingClient(FakeClient):
-        def dag_runs(self, dag_id, limit):
+        def dag_runs_since(self, dag_id, since_iso, min_runs):
             calls.append(dag_id)
             return []
 

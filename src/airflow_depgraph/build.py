@@ -71,9 +71,21 @@ def _live_snapshot(client: AirflowClient, s: Settings, node_id: str | None, log:
     return snap
 
 
+def status_dag_ids(snap: Snapshot, s: Settings) -> list[str]:
+    """The DAGs whose status is read: the graph's, plus the active catalog DAGs that carry a
+    preset tag. Those have no link but are on the page, and a failure there matters as much;
+    without `tags` the catalog can be the whole instance, so only the graph is read then."""
+    ids = set(snap.graph.dag_ids)
+    if s.tags:
+        wanted = set(s.tags)
+        ids.update(d for d, c in (snap.catalog or {}).items()
+                   if not c.get("is_stale") and wanted & set(c.get("tags") or []))
+    return sorted(ids)
+
+
 def _fetch_dags(client: AirflowClient, snap: Snapshot, s: Settings, log: Log,
                 tasks_by_dag: dict[str, list[dict] | None] | None = None) -> dict | None:
-    ids = snap.graph.dag_ids
+    ids = status_dag_ids(snap, s)
     if s.with_status:
         def progress(msg: str) -> None:
             log(f"fetching status {msg.split()[0]}")

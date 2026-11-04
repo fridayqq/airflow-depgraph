@@ -144,6 +144,9 @@ function impact(data, opts) {
   const roots = data.nodes.filter(n => n.type === 'dag' && inKeep(n.id) && failingOf(n, kinds)).map(n => n.id);
   const rootSet = new Set(roots);
   const at = n => Date.parse(n.ran || '');
+  // When the failure happened: the failed run's start, not n.ran, which is the start of a newer run
+  // still running when the DAG is already running again.
+  const failedAt = n => Date.parse((n.fail && n.fail.date) || n.ran || '');
   const ranSince = (id, since) => { const t = at(byId.get(id)); return !isNaN(t) && !isNaN(since) && t >= since; };
   const produced = (root, link) => {
     const o = root.fail.outlets ? root.fail.outlets[link] : undefined;
@@ -166,7 +169,7 @@ function impact(data, opts) {
   const role = new Map(roots.map(id => [id, 'root'])), cause = new Map(), byRoot = new Map(), links = new Map(), from = new Map();
   const addLink = (s, t, kind) => { const k = s + '|' + t; if (!links.has(k) || kind === 'blocked') links.set(k, {s, t, kind}); };
   const walk = (rootId, kind) => {
-    const root = byId.get(rootId), since = at(root), hits = [];
+    const root = byId.get(rootId), since = failedAt(root), hits = [];
     const seen = new Set([rootId]);
     let frontier = [rootId];
     for (let hop = 1; frontier.length; hop++) {

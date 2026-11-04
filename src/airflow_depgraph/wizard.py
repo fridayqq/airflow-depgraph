@@ -63,7 +63,9 @@ _DOC: list[tuple[str, list[str]]] = [
                           "(case-insensitive)."]),
     ("task_query_regex", ["Regex used by --tasks-preset. Nothing is filtered at load time; "
                           "all tasks are fetched."]),
-    ("status_runs_lookback", ["How many recent runs to look at when computing the status."]),
+    ("status_runs_lookback", ["At least this many newest runs are examined for the status."]),
+    ("status_lookback_days", ["And every run of the last this many days, so that a failure buried "
+                              "under frequent runs that did nothing is still seen."]),
     ("tags", ["Default page filter: only DAGs with any of these tags "
               "(the page can switch it off)."]),
     ("infer_sensors", ["Infer DAG dependencies from Python and custom sensors (fetch/graph; the "
@@ -847,7 +849,7 @@ def _ask_advanced(p: Prompter, given: Mapping[str, object], chosen: dict) -> Non
          _DEFAULTS["tests_task_regex"], validate_regex, "--tests-task-regex"),
         ("task_query_regex", "Regex for --tasks-preset, Enter for none", "", validate_regex,
          "--task-query-regex"),
-        ("lookback", "Recent runs to look at for the status", _DEFAULTS["status_runs_lookback"],
+        ("lookback", "At least this many newest runs for the status", _DEFAULTS["status_runs_lookback"],
          _positive(int, "lookback", 1), "--lookback"),
         ("timeout", "Seconds to wait for one API request", float(_DEFAULTS["timeout"]),
          timeout_ok, "--timeout"),

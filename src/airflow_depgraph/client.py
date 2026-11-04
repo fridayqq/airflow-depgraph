@@ -12,6 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import Counter
+from datetime import datetime, timezone
 from io import BytesIO
 
 from . import __version__
@@ -75,6 +76,17 @@ class ApiError(RuntimeError):
         self.status = status
         self.path = path
         self.network = network      # no response at all: timeout, refused, DNS
+
+
+def parse_time(value: object) -> datetime | None:
+    """An ISO 8601 timestamp as an aware datetime (naive ones count as UTC), else None."""
+    if not isinstance(value, str):
+        return None
+    try:
+        t = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
 
 
 def _ti_key(ti: dict) -> tuple:
@@ -295,15 +307,19 @@ class AirflowClient:
         return out
 
     def bulk_task_instances(self, dag_ids: list[str], run_ids: list[str],
-                            states: list[str] | tuple[str, ...]) -> list[dict]:
-        """Task instances of the given runs in the given states, paged."""
+                            states: list[str] | tuple[str, ...],
+                            task_ids: list[str] | None = None) -> list[dict]:
+        """Task instances of the given runs in the given states (and, when given, with the
+        given task ids), paged."""
         out: list[dict] = []
         for chunk in _chunks(list(run_ids), BULK_PAGE):
             offset = 0
             while True:
-                data = self.post(TASKS_PATH, {
-                    "dag_ids": list(dag_ids), "dag_run_ids": chunk, "state": list(states),
-                    "page_limit": BULK_PAGE, "page_offset": offset})
+                body = {"dag_ids": list(dag_ids), "dag_run_ids": chunk, "state": list(states),
+                        "page_limit": BULK_PAGE, "page_offset": offset}
+                if task_ids is not None:
+                    body["task_ids"] = list(task_ids)
+                data = self.post(TASKS_PATH, body)
                 page = data.get("task_instances") or []
                 out.extend(page)
                 offset += len(page)
@@ -323,6 +339,28 @@ class AirflowClient:
         data = self.get(f"/api/v2/dags/{self._q(dag_id)}/dagRuns",
                         limit=limit, order_by="-run_after")
         return data["dag_runs"]
+
+    def dag_runs_since(self, dag_id: str, since_iso: str, min_runs: int) -> list[dict]:
+        """Runs newest first: every run started since `since_iso`, and at least the newest
+        `min_runs` whatever their age. Paged; a run without a start counts as old."""
+        since = parse_time(since_iso)
+        out: list[dict] = []
+        offset = 0
+        while True:
+            data = self.get(f"/api/v2/dags/{self._q(dag_id)}/dagRuns",
+                            limit=BULK_PAGE, offset=offset, order_by="-run_after")
+            page = data.get("dag_runs") or []
+            for run in page:
+                started = parse_time(run.get("run_after"))
+                if len(out) < min_runs or (started is not None and since is not None
+                                           and started >= since):
+                    out.append(run)
+                else:
+                    return out
+            total = data.get("total_entries")
+            offset += len(page)
+            if len(page) < BULK_PAGE or (isinstance(total, int) and offset >= total):
+                return out
 
     def task_instances(self, dag_id: str, run_id: str, state: str | None = None) -> list[dict]:
         """Every task instance of the run, paged; stops at total_entries or a repeated page."""

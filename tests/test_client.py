@@ -582,3 +582,53 @@ def test_health_404_is_an_api_error():
     with pytest.raises(ApiError) as ei:
         AirflowClient(URL, opener=op).health()
     assert ei.value.status == 404
+
+
+def test_dag_runs_since_pages_and_keeps_the_newest_min_runs_past_the_window():
+    calls = []
+    runs = [{"dag_run_id": f"r{i}", "run_after": f"2026-10-{31 - i:02d}T00:00:00Z"} for i in range(30)]
+    runs += [{"dag_run_id": "old1", "run_after": "2026-09-01T00:00:00Z"},
+             {"dag_run_id": "old2", "run_after": "2026-08-01T00:00:00Z"},
+             {"dag_run_id": "nodate"}]
+
+    def opener(req, timeout=None):
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(req.full_url).query)
+        offset, limit = int(q["offset"][0]), int(q["limit"][0])
+        calls.append((offset, limit, q["order_by"][0]))
+        return _Resp(json.dumps({"dag_runs": runs[offset:offset + limit],
+                                 "total_entries": len(runs)}).encode())
+
+    c = AirflowClient(URL, "t", opener=opener)
+    # Every run of the window (October), and nothing older: the newest 5 are in it already.
+    out = c.dag_runs_since("d", "2026-10-01T00:00:00.000000Z", 5)
+    assert [r["dag_run_id"] for r in out] == [f"r{i}" for i in range(30)]
+    assert calls == [(0, client_mod.BULK_PAGE, "-run_after")]
+    # A window with nothing in it still yields the newest min_runs, a run without a start included.
+    tail = [r["dag_run_id"] for r in c.dag_runs_since("d", "2027-01-01T00:00:00Z", 33)][-2:]
+    assert tail == ["old2", "nodate"]
+    assert len(c.dag_runs_since("d", "2027-01-01T00:00:00Z", 32)) == 32
+
+
+def test_dag_runs_since_reads_a_second_page_when_the_window_fills_the_first(monkeypatch):
+    monkeypatch.setattr(client_mod, "BULK_PAGE", 10)
+    runs = [{"dag_run_id": f"r{i}", "run_after": f"2026-10-{31 - i:02d}T00:00:00Z"} for i in range(15)]
+    calls = []
+
+    def opener(req, timeout=None):
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(req.full_url).query)
+        offset, limit = int(q["offset"][0]), int(q["limit"][0])
+        calls.append(offset)
+        return _Resp(json.dumps({"dag_runs": runs[offset:offset + limit],
+                                 "total_entries": len(runs)}).encode())
+
+    out = AirflowClient(URL, "t", opener=opener).dag_runs_since("d", "2026-10-20T00:00:00Z", 1)
+    assert [r["dag_run_id"] for r in out] == [f"r{i}" for i in range(12)]   # Oct 31 .. Oct 20
+    assert calls == [0, 10]
+
+
+def test_parse_time_handles_z_naive_and_junk():
+    from datetime import timezone
+    t = client_mod.parse_time("2026-10-01T00:00:00Z")
+    assert t.tzinfo is not None and t.utcoffset().total_seconds() == 0
+    assert client_mod.parse_time("2026-10-01T00:00:00").tzinfo == timezone.utc
+    assert client_mod.parse_time("soon") is None and client_mod.parse_time(None) is None

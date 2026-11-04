@@ -34,7 +34,8 @@ class Settings:
     tag_facet: str | None = None    # tag prefix shown as chips on the page, e.g. "vertical:"; None: detected
     tests_task_regex: str = r"(^|[._-])tests?([._-]|$)"
     task_query_regex: str | None = None
-    status_runs_lookback: int = 5
+    status_runs_lookback: int = 5       # at least this many newest runs are examined
+    status_lookback_days: int = 7       # and every run of the last this many days
     tags: tuple[str, ...] = ()
     infer_sensors: bool = False
     edge_strength: bool = True      # hard/soft asset edges from each consumer DAG's schedule

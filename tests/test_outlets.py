@@ -121,7 +121,7 @@ class FailingClient(FakeClient):
         super().__init__(*a, **kw)
         self.task_calls = []
 
-    def dag_runs(self, dag_id, limit):
+    def dag_runs_since(self, dag_id, since_iso, min_runs):
         if dag_id == "x":
             return [{"dag_run_id": "r1", "state": "failed", "run_after": "2026-11-02T09:00:00Z"}]
         return [{"dag_run_id": "r2", "state": "success", "run_after": "2026-11-02T10:00:00Z"}]

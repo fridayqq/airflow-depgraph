@@ -27,6 +27,7 @@ try:
     import fcntl
 except ImportError:  # not POSIX: every process refreshes on its own
     fcntl = None
+from .build import status_dag_ids
 from .status import fetch_status
 
 TOKEN_COOKIE = "_token"
@@ -415,6 +416,7 @@ class PageBuilder:
                 snap.inferred = snapmod.visible_inferred(cached[0], visible)
                 updated = datetime.fromtimestamp(cached[1], timezone.utc).strftime("%H:%M UTC")
         if with_status:
-            snap.dags = fetch_status(client, snap.graph.dag_ids, self.settings, with_tasks=False,
+            snap.dags = fetch_status(client, status_dag_ids(snap, self.settings), self.settings,
+                                     with_tasks=False,
                                      catalog=snap.catalog, workers=STATUS_WORKERS)
         return render(snap, self.settings, inferred_note=note, inferred_updated=updated)

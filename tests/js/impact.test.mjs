@@ -128,3 +128,11 @@ test('filterView onlyFail follows the kind filter', () => {
   const only = core.filterView(d, {...off, kinds: {tests: false, pipeline: true}}).keep;
   assert.ok(!only.has('dag:t') && only.has('dag:f'));
 });
+
+test('the failure time is the failed run, not a newer run of the root that is still running', () => {
+  const d = testsCase();
+  const t = d.nodes.find(n => n.id === 'dag:t');
+  t.ran = AFTER;   // running again since AFTER; it failed at T0
+  const im = core.impact(d, {});
+  assert.deepEqual(im.unvalidated.sort(), ['dag:u1', 'dag:u2', 'dag:u4']);   // u1, u2 ran between T0 and AFTER
+});

@@ -46,8 +46,10 @@ name = "example"
 # Regex used by --tasks-preset. Nothing is filtered at load time; all tasks are fetched.
 # task_query_regex = "^(extract|load)_"
 
-# How many recent runs to look at when computing the status.
+# At least this many newest runs are examined for the status, and every run of the last
+# status_lookback_days days: a failure buried under frequent runs that did nothing is still seen.
 # status_runs_lookback = 5
+# status_lookback_days = 7
 
 # Default page filter: only DAGs with any of these tags (the page can switch it off).
 # tags = ["team-a"]
