@@ -1,4 +1,4 @@
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 from .build import build_page, connect, fetch_snapshot  # noqa: E402
 from .presets import Settings  # noqa: E402
