@@ -783,7 +783,8 @@ function fitTo(ids) {
   if (!ns.length) return;
   fitBox(d3.min(ns, n => n.x), d3.max(ns, n => n.x), d3.min(ns, n => n.y), d3.max(ns, n => n.y), ns.length === 1);
 }
-// Fit to all shown nodes, ignoring the outer 2% on each side so far-off small components do not shrink the graph.
+// Fit to all shown nodes. On a big graph the outer 2% on each side are ignored, so far-off small
+// components do not shrink the graph; on a small one every node counts.
 function fitAll() {
   const ns = nodes.filter(n => n.x != null);
   if (!ns.length) return;
@@ -791,8 +792,8 @@ function fitAll() {
     fitBox(d3.min(ns, n => n.x) - 70, d3.max(ns, n => n.x) + 70, d3.min(ns, n => n.y), d3.max(ns, n => n.y), ns.length === 1);
     return;
   }
-  const xs = ns.map(n => n.x).sort(d3.ascending), ys = ns.map(n => n.y).sort(d3.ascending);
-  fitBox(d3.quantile(xs, .02), d3.quantile(xs, .98), d3.quantile(ys, .02), d3.quantile(ys, .98), ns.length === 1);
+  const xs = ns.map(n => n.x).sort(d3.ascending), ys = ns.map(n => n.y).sort(d3.ascending), q = ns.length > 40 ? .02 : 0;
+  fitBox(d3.quantile(xs, q), d3.quantile(xs, 1 - q), d3.quantile(ys, q), d3.quantile(ys, 1 - q), ns.length === 1);
 }
 
 const SEARCH_RE = /__SEARCH_RE__/;

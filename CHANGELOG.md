@@ -5,6 +5,9 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- *Fit* on a graph of up to 40 nodes covers every node; the outer 2% are trimmed only on bigger graphs, where far-off small components would shrink the picture.
+
 ## [0.9.0] - 2026-11-06
 
 ### Added
