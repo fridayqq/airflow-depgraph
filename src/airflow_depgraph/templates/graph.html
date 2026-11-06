@@ -451,6 +451,10 @@ function draw() {
     sim.alphaDecay(.05).tick(200);
     ticked();
   }
+  if (IMPACT && pendingFit) {  // the columns are known before the layout settles: fit to them now, and again once it has
+    const ns = nodes.filter(n => !n.shelf && n.tx != null);
+    if (ns.length) fitBox(d3.min(ns, n => n.tx) - 70, d3.max(ns, n => n.tx) + 70, d3.min(ns, n => n.ty), d3.max(ns, n => n.ty), ns.length === 1);
+  }
   placeLabels(lbl);
   applyHighlight();
 }
@@ -783,6 +787,10 @@ function fitTo(ids) {
 function fitAll() {
   const ns = nodes.filter(n => n.x != null);
   if (!ns.length) return;
+  if (IMPACT) {  // a few columns, each of which counts; the labels under the outer columns need room
+    fitBox(d3.min(ns, n => n.x) - 70, d3.max(ns, n => n.x) + 70, d3.min(ns, n => n.y), d3.max(ns, n => n.y), ns.length === 1);
+    return;
+  }
   const xs = ns.map(n => n.x).sort(d3.ascending), ys = ns.map(n => n.y).sort(d3.ascending);
   fitBox(d3.quantile(xs, .02), d3.quantile(xs, .98), d3.quantile(ys, .02), d3.quantile(ys, .98), ns.length === 1);
 }
