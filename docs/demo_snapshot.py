@@ -1,8 +1,12 @@
-"""Write the fictional snapshot behind the README screenshot: python3 docs/demo_snapshot.py demo.json
+"""Write the fictional snapshot behind the README demo and screenshots: python3 docs/demo_snapshot.py out.json
 
-Screenshot: AIRFLOW_DEPGRAPH_HIGHLIGHT_LABEL=Reports airflow-depgraph render demo.json \
---highlight '_report$' -o demo.html, open it in a window about 1420x750, press Fit, nothing
-selected and no chip chosen.
+Render it with AIRFLOW_DEPGRAPH_HIGHLIGHT_LABEL=Reports airflow-depgraph render demo.json \
+--highlight '_report$' -o demo.html; docs/record_demo.mjs records the GIF and docs/screenshots.mjs
+takes page.png and impact.png (the steps are at the top of record_demo.mjs).
+
+Two failures: payments_ingest (pipeline, its outlet not produced) blocks the finance chain, which
+has not run since; customers_dedupe (tests only, outlet produced) is followed by the customer and
+order DAGs, which ran after it on unvalidated data.
 """
 
 from __future__ import annotations
@@ -11,7 +15,7 @@ import json
 import random
 import sys
 
-FETCHED = "2026-10-28T06:00:00Z"
+FETCHED = "2026-11-06T06:00:00Z"
 TEAMS = {"orders": "team-orders", "customers": "team-customers", "finance": "team-finance",
          "marketing": "team-marketing"}
 VERTICAL = {"orders": "Commerce", "customers": "Customer", "finance": "Finance", "marketing": "Marketing"}
@@ -65,7 +69,19 @@ CONSUMES = {
 }
 TRIGGERS = [("finance_month_close", "ledger_export")]
 SENSORS = [("marketing_weekly_report", "wait_attribution", "attribution_model")]
-FAILED = {"payments_ingest": "pipeline", "customers_dedupe": "tests"}
+# dag → (kind, when the failed run started, which of its outlets that run produced)
+FAILED = {"payments_ingest": ("pipeline", "2026-11-06T04:15:00Z", {"warehouse://finance/payments": False}),
+          "customers_dedupe": ("tests", "2026-11-06T03:30:00Z", {"warehouse://customers/golden": True})}
+# customers_dedupe is already running again after its failure.
+RUNNING = {"customers_dedupe": "2026-11-06T05:50:00Z"}
+# When each DAG last ran. Everything after both failures by default, so the DAGs downstream of
+# the tests failure count as having run on unvalidated data; the finance chain and the marketing
+# DAGs ran before, so the pipeline failure still blocks them.
+RAN_BEFORE = {"invoices_build": "2026-11-05T04:40:00Z", "revenue_model": "2026-11-05T05:10:00Z",
+              "revenue_report": "2026-11-05T05:30:00Z", "ledger_export": "2026-11-01T06:20:00Z",
+              "exec_dashboard_report": "2026-11-05T06:00:00Z", "finance_month_close": "2026-11-01T06:00:00Z",
+              "attribution_model": "2026-11-05T05:20:00Z", "attribution_report": "2026-11-05T05:40:00Z",
+              "marketing_weekly_report": "2026-11-05T08:00:00Z", "gdpr_erasure": "2026-11-04T01:00:00Z"}
 PAUSED = {"gdpr_erasure"}
 
 random.seed(7)
@@ -90,18 +106,24 @@ for dag_id, teams, cron, outlets in PIPELINES:
     owners = [TEAMS[teams[0]]] if teams else ["platform"]
     catalog[dag_id] = {"tags": tags, "is_paused": dag_id in PAUSED, "is_stale": False,
                        "schedule": schedule, "owners": owners}
-    kind = FAILED.get(dag_id)
-    hour = random.randint(2, 8)
+    kind, failed_at, produced = FAILED.get(dag_id, (None, None, None))
+    ran = failed_at or RAN_BEFORE.get(dag_id) or f"2026-11-06T05:{random.randint(10, 59):02d}:00Z"
     run = {"state": "failed" if kind else "success", "kind": kind or "ok",
-           "run_after": f"2026-10-28T0{hour}:00:00Z",
-           "run_id": f"scheduled__2026-10-28T0{hour}:00:00+00:00",
-           "failed_tasks": ["load"] if kind == "pipeline" else (["dbt_test"] if kind else [])}
+           "run_after": ran, "run_id": f"scheduled__{ran.replace('Z', '+00:00')}",
+           "failed_tasks": ["load"] if kind == "pipeline" else (["dbt_test"] if kind else []),
+           "upstream_failed_tasks": ["publish"] if kind == "pipeline" else []}
+    if kind:
+        run["outlets"] = {asset(label): ok for label, ok in produced.items()}
+    if dag_id in RUNNING:
+        run["running"] = RUNNING[dag_id]
     dags[dag_id] = {"is_paused": dag_id in PAUSED, "schedule": schedule, "owners": owners,
                     "last_run": run}
     for label in outlets:
         edges.append({"source_id": f"dag:{dag_id}", "target_id": asset(label)})
     for label in consumed:
-        edges.append({"source_id": asset(label), "target_id": f"dag:{dag_id}"})
+        # A DAG with a cron next to its assets runs without them: a soft edge.
+        edges.append({"source_id": asset(label), "target_id": f"dag:{dag_id}",
+                      "strength": "soft" if cron else "hard"})
 
 for i, (src, dst) in enumerate(TRIGGERS, 1):
     tid = f"trigger:{i}"

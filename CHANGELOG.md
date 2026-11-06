@@ -15,6 +15,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 - The *blast radius* switch is replaced by *what failed and what it blocks*; a `blast` hash flag opens the new view.
+- Switching *what failed and what it blocks* on fits the view to its columns at once instead of when the layout settles, and the fit covers every column (the outermost ones used to be trimmed as outliers).
+- README: the demo GIF and the page screenshot are recorded from a snapshot with `outlets`, `running` and edge strength, so they show the new view; a screenshot of it and `docs/screenshots.mjs`, which takes both.
 - Status: a successful run no longer fixes an older failed run of the lookback unless the tasks that failed there ran in it or in another success since. A run that takes a freshness gate's skip path ends green with the work skipped, and used to hide the failure; now the failed run stays the DAG's last decisive run. Per-DAG and bulk paths alike; the bulk path makes two extra `taskInstances/list` calls per round only for the DAGs with a failure in their window.
 - The bulk run listing covers the whole status window in one pass (`dagRuns/list`, paged), instead of three-day then fourteen-day listings capped at the run lookback; DAGs with fewer runs in the window than `status_runs_lookback` are read per DAG (`GET /dags/{id}/dagRuns`, paged with `offset`), where the newest runs count whatever their age. The per-DAG path reads the failed run's task instances first and the successes since it newest first, stopping as soon as the failed tasks are seen again.
 
