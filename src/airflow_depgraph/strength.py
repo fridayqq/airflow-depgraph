@@ -26,9 +26,9 @@ def asset_uris(expression: object) -> set[str]:
         return out
     asset = expression.get("asset")
     if isinstance(asset, dict):
-        uri = asset.get("uri") or asset.get("name")
-        if isinstance(uri, str):
-            out.add(uri)
+        # Both: /ui/dependencies labels the asset by name, while `uri` is normalised (an
+        # `Asset("contract://orders")` has the uri `contract://orders/`).
+        out.update(v for v in (asset.get("uri"), asset.get("name")) if isinstance(v, str))
         return out
     for key in ("all", "any"):
         for child in expression.get(key) or []:

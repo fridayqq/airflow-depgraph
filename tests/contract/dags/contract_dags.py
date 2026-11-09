@@ -1,6 +1,7 @@
 """DAGs for the nightly contract test: one of each dependency kind airflow-depgraph reads.
 
 producer --asset--> consumer
+producer --two assets (an `all` condition; an asset-condition gate on Airflow 3.4)--> gated
 trigger --TriggerDagRunOperator--> triggered
 waiter --ExternalTaskSensor / PythonSensor (op_kwargs external_dag_id)--> producer
 """
@@ -16,6 +17,7 @@ from airflow.providers.standard.sensors.python import PythonSensor
 from airflow.sdk import DAG, Asset, task
 
 ORDERS = Asset("contract://orders")
+PAYMENTS = Asset("contract://payments")
 START = datetime(2026, 1, 1)
 COMMON = {"start_date": START, "catchup": False, "tags": ["contract"]}
 
@@ -26,7 +28,7 @@ def _producer_ready(external_dag_id: str) -> bool:
 
 with DAG("contract_producer", schedule=None, **COMMON):
 
-    @task(outlets=[ORDERS])
+    @task(outlets=[ORDERS, PAYMENTS])
     def produce() -> str:
         return "orders"
 
@@ -34,6 +36,9 @@ with DAG("contract_producer", schedule=None, **COMMON):
 
 with DAG("contract_consumer", schedule=[ORDERS], **COMMON):
     EmptyOperator(task_id="consume")
+
+with DAG("contract_gated", schedule=(ORDERS & PAYMENTS), **COMMON):
+    EmptyOperator(task_id="consume_both")
 
 with DAG("contract_trigger", schedule=None, **COMMON):
     TriggerDagRunOperator(

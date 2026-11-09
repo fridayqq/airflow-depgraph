@@ -211,3 +211,53 @@ def test_with_inferred_drops_targets_the_sensor_dag_already_feeds():
     assert {"source_id": "dag:u", "target_id": "sensor-inferred:w:wait"} in e
     assert not any(x["target_id"] == "sensor-inferred:w:wait" and x["source_id"] == "dag:t" for x in e)
     assert not any(x["id"] == "sensor-inferred:w:only_t" for x in n)
+
+
+def _gate_raw():
+    """Airflow 3.4: consumer `(a & b) | c` is served with an or-gate fed by `c` and an and-gate."""
+    return {
+        "nodes": [
+            {"id": "dag:consumer", "label": "consumer", "type": "dag"},
+            {"id": "dag:producer", "label": "producer", "type": "dag"},
+            {"id": "asset:1", "label": "s3://a", "type": "asset"},
+            {"id": "asset:2", "label": "s3://b", "type": "asset"},
+            {"id": "asset:3", "label": "s3://c", "type": "asset"},
+            {"id": "dag:consumer-or-gate-0", "label": "dag:consumer-or-gate-0",
+             "type": "asset-condition", "asset_condition_type": "or-gate"},
+            {"id": "dag:consumer-or-gate-0-and-gate-0", "label": "dag:consumer-or-gate-0-and-gate-0",
+             "type": "asset-condition", "asset_condition_type": "and-gate"},
+        ],
+        "edges": [
+            {"source_id": "dag:producer", "target_id": "asset:1"},
+            {"source_id": "dag:consumer-or-gate-0", "target_id": "dag:consumer"},
+            {"source_id": "asset:3", "target_id": "dag:consumer-or-gate-0"},
+            {"source_id": "dag:consumer-or-gate-0-and-gate-0", "target_id": "dag:consumer-or-gate-0"},
+            {"source_id": "asset:1", "target_id": "dag:consumer-or-gate-0-and-gate-0"},
+            {"source_id": "asset:2", "target_id": "dag:consumer-or-gate-0-and-gate-0"},
+        ],
+    }
+
+
+def test_validate_collapses_asset_condition_gates_into_direct_asset_edges():
+    nodes, edges = validate_payload(_gate_raw(), airflow_version="3.4.0")
+    assert {n["type"] for n in nodes} == {"dag", "asset"}
+    assert {(e["source_id"], e["target_id"]) for e in edges} == {
+        ("dag:producer", "asset:1"),
+        ("asset:1", "dag:consumer"), ("asset:2", "dag:consumer"), ("asset:3", "dag:consumer"),
+    }
+    assert len(edges) == 4
+
+
+def test_validate_collapsed_gate_edges_are_not_duplicated():
+    raw = _gate_raw()
+    raw["edges"].append({"source_id": "asset:3", "target_id": "dag:consumer"})   # already direct
+    raw["edges"].append({"source_id": "asset:3", "target_id": "dag:consumer-or-gate-0-and-gate-0"})
+    _, edges = validate_payload(raw, airflow_version="3.4.0")
+    pairs = [(e["source_id"], e["target_id"]) for e in edges]
+    assert pairs.count(("asset:3", "dag:consumer")) == 1 and len(pairs) == 4
+
+
+def test_collapsed_gate_dag_is_one_hop_from_its_producer():
+    nodes, edges = validate_payload(_gate_raw(), airflow_version="3.4.0")
+    g = new(nodes, edges, None, "3.4.0").graph
+    assert reach_dags(g, "dag:producer", "downstream") == 1

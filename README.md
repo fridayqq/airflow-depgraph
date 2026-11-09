@@ -11,7 +11,7 @@ Fetch, query and render the Airflow 3 cross-DAG dependency graph (DAG → asset 
 Things to know before you use it:
 
 - **Airflow 3 only.** Airflow 2 has no `/ui/dependencies` endpoint, so it is not supported.
-- **Internal endpoint.** `/ui/dependencies` belongs to the Airflow UI, not the public API. It may change between releases. For example, 3.1.8 started filtering it by DAG permissions. The tool was developed against Airflow 3.3.2.
+- **Internal endpoint.** `/ui/dependencies` belongs to the Airflow UI, not the public API. It may change between releases. For example, 3.1.8 started filtering it by DAG permissions, and 3.4.0 serves `all`/`any` asset conditions as gate nodes, which the snapshot folds back into asset → DAG edges. The tool was developed against Airflow 3.3.2 and 3.4.0.
 - **Pure cron DAGs have no edges.** A DAG with no asset, trigger or sensor link is not part of `/ui/dependencies`. It is taken from the DAG catalog instead: the page lists it under *DAGs without dependencies*, and `report unlinked` prints it.
 
 ## What the graph contains
@@ -38,7 +38,7 @@ To run from a checkout, use `uv run airflow-depgraph ...`.
 
 The same package is also an Airflow 3 plugin. Installed into the Airflow image, it adds
 **Browse → DAG Dependencies**: the graph page inside the Airflow UI, for the signed-in user.
-Tested on Airflow 3.1.5 and 3.3.2, at the root and under a sub-path such as `/airflow/`.
+Tested on Airflow 3.1.5, 3.3.2 and 3.4.0, at the root and under a sub-path such as `/airflow/`.
 
 - **Data.** The page calls the api-server's own `/ui/dependencies` and REST API with the
   user's session token. DAG-level permission filtering of the graph is done by Airflow itself
