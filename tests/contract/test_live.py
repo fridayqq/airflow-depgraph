@@ -1,6 +1,6 @@
 """Live contract test against a running Airflow (nightly job). Skipped unless DEPGRAPH_CONTRACT_URL is set.
 
-The job starts `airflow standalone` with tests/contract/dags, runs the four contract DAGs once and
+The job starts `airflow standalone` with tests/contract/dags, runs the five contract DAGs once and
 checks what airflow-depgraph reads from them.
 """
 
@@ -19,7 +19,7 @@ from airflow_depgraph import cli
 from airflow_depgraph.client import AirflowClient
 
 URL = os.environ.get("DEPGRAPH_CONTRACT_URL", "").rstrip("/")
-DAG_IDS = ("contract_producer", "contract_consumer", "contract_trigger", "contract_waiter")
+DAG_IDS = ("contract_producer", "contract_consumer", "contract_gated", "contract_trigger", "contract_waiter")
 TERMINAL = {"success", "failed"}
 WAIT_SECONDS = 600
 
@@ -109,6 +109,21 @@ def test_asset_edge_from_producer_to_consumer(snapshot, capsys):
     assert cli.main(["downstream", "contract_producer", str(path), "--json"]) == 0
     dags = [d["dag_id"] for d in json.loads(capsys.readouterr().out)["dags"]]
     assert "contract_consumer" in dags
+
+
+def test_gated_consumer_hangs_on_its_assets_not_on_a_gate(snapshot, capsys):
+    """Airflow 3.4 serves an `all` condition as an asset-condition node; the snapshot keeps the
+    pre-3.4 shape: direct asset -> DAG edges, with a strength, and the asset as `via`."""
+    snap, path = snapshot
+    assert not [n for n in snap["nodes"] if n["type"] == "asset-condition"]
+    to_gated = {e["source_id"]: e.get("strength") for e in snap["edges"]
+                if e["target_id"] == "dag:contract_gated"}
+    labels = {n["id"]: n["label"] for n in snap["nodes"]}
+    assert {labels[s] for s in to_gated} == {"contract://orders", "contract://payments"}, to_gated
+    assert set(to_gated.values()) == {"hard"}, to_gated
+    assert cli.main(["downstream", "contract_producer", str(path), "--json"]) == 0
+    gated = [d for d in json.loads(capsys.readouterr().out)["dags"] if d["dag_id"] == "contract_gated"]
+    assert gated and gated[0]["hops"] == 1 and gated[0]["via"].startswith("asset:contract://"), gated
 
 
 def test_trigger_edge_to_triggered_dag(snapshot, capsys):

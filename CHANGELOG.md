@@ -5,6 +5,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- Airflow 3.4: `/ui/dependencies` serves a DAG's `all`/`any` asset condition as `asset-condition` nodes (an and-gate or or-gate between the assets and the DAG, nested for `(a & b) | c`). The snapshot folds them into direct asset → DAG edges, the shape of Airflow 3.1–3.3, at fetch and when a raw payload is loaded. Without that, `via` named the gate (`dag:revenue_model-and-gate-0`), hard/soft was missing on every multi-asset consumer (so an `Asset or <cron>` DAG looked blocked), the page drew the gates as unlabelled diamonds, and `fetch` asked for the details of each gate as if it were a DAG. The nightly contract test runs a DAG scheduled on two assets.
+- Edge strength matched the asset node's label against the `uri` of the DAG's `asset_expression` only. An asset named without a path (`Asset("contract://orders")`) has the uri normalised to `contract://orders/` while the node carries the name, so its edges were always soft. Both the uri and the name are matched now.
+
 ### Changed
 - *Fit* on a graph of up to 40 nodes covers every node; the outer 2% are trimmed only on bigger graphs, where far-off small components would shrink the picture.
 

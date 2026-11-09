@@ -63,3 +63,12 @@ def test_fetch_snapshot_can_skip_strength_and_survives_errors(monkeypatch):
     snap = fetch_snapshot(Broken("http://af"), Settings(url="http://af"), log=logs.append)
     assert all("strength" not in e for e in snap.edges)
     assert any("asset schedule unavailable for 1 of 1" in m for m in logs)
+
+
+def test_asset_named_without_a_path_matches_the_label_not_only_the_normalised_uri():
+    # Asset("contract://orders"): name "contract://orders", uri normalised to "contract://orders/";
+    # the /ui/dependencies node is labelled by name.
+    details = {"timetable_summary": "Asset", "asset_expression": {"all": [
+        {"asset": {"uri": "contract://orders/", "name": "contract://orders"}}]}}
+    assert asset_uris(details["asset_expression"]) == {"contract://orders/", "contract://orders"}
+    assert strength_of(details, "contract://orders") == "hard"

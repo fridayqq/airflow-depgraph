@@ -32,6 +32,43 @@ def _is_trigger_target(other: object, dag_node: str, by_id: dict) -> bool:
                 and parts[0] == "trigger" and parts[2] == dag_node[4:])
 
 
+def _collapse_asset_conditions(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Airflow 3.4 serves a DAG's `all`/`any` asset condition as `asset-condition` nodes (an
+    and-gate or or-gate per condition, nested for `(a & b) | c`) between the assets and the DAG.
+    Every path through them becomes a direct asset -> DAG edge, the shape of Airflow 3.1-3.3, so
+    hops, `via`, edge strength and the page see assets. The condition itself is read from the DAG's
+    `asset_expression` (strength.py)."""
+    gates = {n["id"] for n in nodes if n.get("type") == "asset-condition"}
+    if not gates:
+        return nodes, edges
+    into: dict[str, list[str]] = {}
+    for e in edges:
+        if e["target_id"] in gates:
+            into.setdefault(e["target_id"], []).append(e["source_id"])
+
+    def sources(gate: str, seen: frozenset[str]) -> list[str]:
+        out: list[str] = []
+        for s in into.get(gate, ()):
+            if s not in gates:
+                out.append(s)
+            elif s not in seen:
+                out.extend(sources(s, seen | {s}))
+        return out
+
+    kept: list[dict] = []
+    pairs = {(e["source_id"], e["target_id"]) for e in edges
+             if e["source_id"] not in gates and e["target_id"] not in gates}
+    for e in edges:
+        if e["source_id"] not in gates and e["target_id"] not in gates:
+            kept.append(e)
+        elif e["source_id"] in gates and e["target_id"] not in gates:
+            for s in sources(e["source_id"], frozenset({e["source_id"]})):
+                if (s, e["target_id"]) not in pairs:
+                    pairs.add((s, e["target_id"]))
+                    kept.append({**e, "source_id": s})
+    return [n for n in nodes if n["id"] not in gates], kept
+
+
 def validate_payload(raw: dict, airflow_version: str | None = None) -> tuple[list[dict], list[dict]]:
     prefix = "unexpected /ui/dependencies payload"
     nodes = raw.get("nodes") if isinstance(raw, dict) else None
@@ -62,7 +99,7 @@ def validate_payload(raw: dict, airflow_version: str | None = None) -> tuple[lis
                     nodes.append({"id": end, "label": end[4:], "type": "dag"})
                     node_ids.add(end)
     kept = [e for e in edges if e["source_id"] in node_ids and e["target_id"] in node_ids]
-    return nodes, kept
+    return _collapse_asset_conditions(nodes, kept)
 
 
 @dataclass
